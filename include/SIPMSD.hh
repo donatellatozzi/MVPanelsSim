@@ -1,0 +1,27 @@
+#ifndef SIPMSD_h
+#define SIPMSD_h 1
+
+#include "G4VSensitiveDetector.hh"
+#include "globals.hh"
+
+class G4Step;
+class G4HCofThisEvent;
+
+class SIPMSD : public G4VSensitiveDetector {
+public:
+  SIPMSD(G4String name);
+  virtual ~SIPMSD();
+
+  virtual void Initialize(G4HCofThisEvent* HCE);
+  virtual G4bool ProcessHits(G4Step* aStep, G4TouchableHistory* ROhist);
+  virtual void EndOfEvent(G4HCofThisEvent* HCE);
+
+  //G4int GetHitCount() { return fHitCount; }
+  //void Reset() { fHitCount = 0; }
+
+  //private:
+  //G4int fHitCount;
+
+};
+
+#endif

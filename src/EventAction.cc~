@@ -1,0 +1,59 @@
+#include "EventAction.hh"
+#include "G4AnalysisManager.hh"
+#include "G4SystemOfUnits.hh"
+
+EventAction::EventAction() : G4UserEventAction() {
+    auto am = G4AnalysisManager::Instance();
+    am->SetDefaultFileType("root");
+
+    am->CreateNtuple("Eventi", "Dati");
+    am->CreateNtupleDColumn("E_init_MeV");      // 0
+    am->CreateNtupleDColumn("Edep_MeV");        // 1
+    am->CreateNtupleDColumn("TrackLength_mm");  // 2
+    am->CreateNtupleIColumn("N_Scint");         // 3
+    //am->CreateNtupleIColumn("N_WLS");           // 3
+    am->CreateNtupleDColumn("T_First_ns");      // 4
+    am->CreateNtupleIColumn("PhotonsInFiber");  // 5
+    am->CreateNtupleIColumn("Hits_SiPM_0");     // 6
+    am->CreateNtupleIColumn("Hits_SiPM_1");     // 7
+    am->CreateNtupleIColumn("Hits_SiPM_2");     // 8
+    am->CreateNtupleIColumn("Hits_SiPM_3");     // 9
+    am->FinishNtuple(0);
+
+    am->CreateNtuple("Fotoni", "Dati Fotoni");
+    am->CreateNtupleIColumn("EventID");  // 0
+    am->CreateNtupleIColumn("TrackID");  // 1
+    am->CreateNtupleDColumn("E_Kinetic_eV"); // 2
+    //am->CreateNtupleDColumn("E_hit_eV");  // 2
+    am->CreateNtupleDColumn("Arrival_Time_ns");   // 3
+    am->CreateNtupleIColumn("SiPM_ID");   // 4
+    am->FinishNtuple(1);
+}
+
+void EventAction::BeginOfEventAction(const G4Event*) {
+    fEinit = 0; fEdep = 0; fTrackLength = 0;
+    fNScintProd = 0; //fNWLSProd = 0;
+    fFirstHitTime = 999999.*ns;
+    for(int i=0; i<4; i++) fSiPMHits[i] = 0;
+    fNPhotonsEntrati = 0;
+    fCountedPhotons.clear();
+}
+
+void EventAction::RegisterSiPMHit(G4double time) {
+    if (time < fFirstHitTime) fFirstHitTime = time;
+}
+
+void EventAction::EndOfEventAction(const G4Event*) {
+    auto am = G4AnalysisManager::Instance();
+    am->FillNtupleDColumn(0, 0, fEinit/MeV);
+    am->FillNtupleDColumn(0, 1, fEdep/MeV);
+    am->FillNtupleDColumn(0, 2, fTrackLength/mm);
+    am->FillNtupleIColumn(0, 3, fNScintProd);
+    //am->FillNtupleIColumn(0, 3, fNWLSProd);
+    am->FillNtupleDColumn(0, 4, (fFirstHitTime > 9000.*ns) ? -1. : fFirstHitTime/ns);
+    am->FillNtupleIColumn(0, 5, fNPhotonsEntrati);
+    for(int i=0; i<4; i++) am->FillNtupleIColumn(0, 6+i, fSiPMHits[i]);
+    am->AddNtupleRow(0);
+}
+
+EventAction::~EventAction() {}

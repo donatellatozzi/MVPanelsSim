@@ -1,0 +1,37 @@
+#include "PrimaryGeneratorAction.hh"
+#include "G4SystemOfUnits.hh"
+#include "G4Electron.hh"
+#include "G4RandomDirection.hh"
+#include "G4RandomTools.hh"
+#include "G4Poisson.hh"
+#include "Randomize.hh" // Per le distribuzioni casuali
+
+PrimaryGeneratorAction::PrimaryGeneratorAction() : G4VUserPrimaryGeneratorAction() {
+  fParticleGun = new G4ParticleGun(1); // 1 particella per evento
+  fParticleGun->SetParticleDefinition(G4Electron::Definition());
+  fParticleGun->SetParticleEnergy(500.*MeV);
+  fParticleGun->SetParticleMomentumDirection(G4ThreeVector(0.,0.,1.));
+
+}
+
+PrimaryGeneratorAction::~PrimaryGeneratorAction() {
+  delete fParticleGun;
+
+}
+
+
+void PrimaryGeneratorAction::GeneratePrimaries(G4Event* anEvent) {
+  // Numero di particelle estratto da una distribuzione di Poisson con media 2.0
+  //G4int nParticles = G4Poisson(1.0);
+
+    // Opzionale: aggiungi una piccola fluttuazione nella posizione (es. fascio largo 5mm)
+    G4double x0 = G4RandGauss::shoot(0.*mm, 0.85*mm);
+    G4double y0 = G4RandGauss::shoot(0.*mm, 0.85*mm);
+	
+    // Posizioniamo il fascio a 2 m dalla tank 
+    fParticleGun->SetParticlePosition(G4ThreeVector(x0,y0,-1000.*mm));
+    
+    fParticleGun->GeneratePrimaryVertex(anEvent);
+ 
+
+}

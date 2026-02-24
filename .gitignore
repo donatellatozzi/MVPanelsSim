@@ -1,0 +1,15 @@
+# Ignora la cartella di compilazione
+build/
+cmake-build-debug/
+
+# Ignora gli eseguibili
+*.exe
+*.o
+
+# Ignora i file di output dati (root, csv, ecc)
+*.root
+*.csv
+*.out
+
+# Ignora file temporanei di sistema
+.DS_Store

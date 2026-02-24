@@ -1,0 +1,28 @@
+#ifndef DetectorConstruction_h
+#define DetectorConstruction_h 1
+
+#include "G4VUserDetectorConstruction.hh"
+#include "globals.hh"
+#include "G4RotationMatrix.hh"
+
+class G4VPhysicalVolume;
+class G4LogicalVolume;
+
+class DetectorConstruction : public G4VUserDetectorConstruction
+{
+  public:
+    DetectorConstruction();
+    virtual ~DetectorConstruction();
+
+    virtual G4VPhysicalVolume* Construct();
+    virtual void ConstructSDandField();
+
+  private:
+    // Metodo helper per creare i segmenti di fibra (Core + Cladding)
+    G4LogicalVolume* CreateFiberSegment(G4double halfL, G4bool isCurve, G4double radius);
+
+    G4LogicalVolume* fLogicScint;
+    G4LogicalVolume* fLogicSiPM;
+};
+
+#endif
