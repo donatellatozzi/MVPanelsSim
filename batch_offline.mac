@@ -1,0 +1,23 @@
+# ---------- Modalità batch/offline ----------
+/vis/disable                 # disattiva completamente il sistema di vis [2](https://arxiv.org/pdf/2410.05719)
+/control/verbose 1
+/run/verbose 1
+/event/verbose 0
+/tracking/verbose 0
+
+# Random (opzionale per riproducibilità)
+/random/setSavingFlag 1
+/random/setSeeds 314159 265358
+
+# ---------- Parametri del generatore (stessi del test, ma espliciti per riproducibilità) ----------
+/prim/spectrum 1     # 0=powerlaw, 1=Gaisser
+/prim/emin 1.0       # GeV
+/prim/emax 100.0     # GeV
+/prim/alpha 2.7
+
+# ---------- Inizializza ----------
+/run/initialize
+
+# ---------- Thread & run ----------
+/run/numberOfThreads 8        # <-- imposta ai core disponibili
+/run/beamOn 40000           # <-- numero eventi in batch

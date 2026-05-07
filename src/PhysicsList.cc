@@ -1,36 +1,25 @@
 #include "PhysicsList.hh"
-#include "G4EmstandardPhysics.hh"
-#include "G4OpticalPhysics.hh"
+#include "G4EmStandardPhysics_option4.hh"
+#include "G4RadioactiveDecayPhysics.hh"
 #include "G4DecayPhysics.hh"
-#include "G4OpticalParameters.hh"
+#include "G4OpticalPhysics.hh"
+#include "G4HadronPhysicsQGSP_BERT_HP.hh" // Per neutroni e adroni accurati
 
-PhysicsList::PhysicsList(): G4VModularPhysicsList() {
-
-  RegisterPhysics(new G4EmStandardPhysics()); // Electromagnetic physics
-  RegisterPhysics(new G4DecayPhysics());  // Decays
-  
-  //RegisterPhysics(new G4OpticalPhysics()); // Optical physics (Cherenkov)
-
-  // Registriamo la fisica ottica
-  G4OpticalPhysics* opticalPhysics = new G4OpticalPhysics();
-  RegisterPhysics(opticalPhysics);
-
-  // Configuriamo i parametri ottici tramite il singleton G4OpticalParameters
-  G4OpticalParameters* params = G4OpticalParameters::Instance();
-
-  params->SetProcessActivation("Cerenkov", false);
-  params->SetProcessActivation("Scintillation", true); 
-  params->SetProcessActivation("OpAbsorption", true);
-  params->SetProcessActivation("OpRayleigh", false);
-  params->SetProcessActivation("OpBoundary", true);
-  params->SetProcessActivation("OpRayleigh", true);
-  params->SetProcessActivation("OpWLS", true);         
+PhysicsList::PhysicsList() : G4VModularPhysicsList() {
+    // 1. Fisica Elettromagnetica accurata
+    RegisterPhysics(new G4EmStandardPhysics_option4());
     
-  // Opzionale: per vedere più dettagli nel terminale
-  params->SetVerboseLevel(1);
-  
-  
+    // 2. Decadimenti e Radioattività
+    RegisterPhysics(new G4DecayPhysics());
+    RegisterPhysics(new G4RadioactiveDecayPhysics());
+    
+    // 3. Fisica Adronica (opzionale ma consigliata per muoni/neutroni)
+    RegisterPhysics(new G4HadronPhysicsQGSP_BERT_HP());
 
+    // 4. Fisica Ottica
+    RegisterPhysics(new G4OpticalPhysics());
 }
 
 PhysicsList::~PhysicsList() {}
+
+

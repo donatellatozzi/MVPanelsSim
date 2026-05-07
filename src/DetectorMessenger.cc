@@ -1,0 +1,42 @@
+#include "DetectorMessenger.hh"
+#include "DetectorConstruction.hh"
+#include "G4UIdirectory.hh"
+#include "G4UIcmdWithAString.hh"
+
+DetectorMessenger::DetectorMessenger(DetectorConstruction* Det)
+: G4UImessenger(),
+  fDetector(Det)
+{
+  fDetDirectory = new G4UIdirectory("/detector/");
+  fDetDirectory->SetGuidance("UI commands specific to this detector.");
+
+  fWrapCmd = new G4UIcmdWithAString("/detector/setWrapping", this);
+  fWrapCmd->SetGuidance("Select the optical wrapping material (Tyvek or Mylar).");
+  fWrapCmd->SetParameterName("wrapping", false);
+  fWrapCmd->SetCandidates("Tyvek Mylar"); // Solo queste due opzioni!
+  fWrapCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
+
+  fGeometryCmd = new G4UIcmdWithAString("/detector/setGeometry", this);
+  fGeometryCmd->SetGuidance("Seleziona il tipo di geometria (Standard o Spiral).");
+  fGeometryCmd->SetParameterName("geometry", false);
+  fGeometryCmd->SetCandidates("Standard Spiral");
+  fGeometryCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
+}
+
+DetectorMessenger::~DetectorMessenger()
+{
+  delete fWrapCmd;
+  delete fDetDirectory;
+  delete fGeometryCmd;
+}
+
+void DetectorMessenger::SetNewValue(G4UIcommand* command, G4String newValue)
+{
+  if (command == fWrapCmd) {
+    fDetector->SetWrappingType(newValue);
+  }
+
+  if (command == fGeometryCmd) {
+    fDetector->SetGeometryType(newValue);
+}
+}

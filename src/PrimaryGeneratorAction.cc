@@ -1,57 +1,112 @@
 #include "PrimaryGeneratorAction.hh"
-#include "G4LogicalVolumeStore.hh"
-#include "G4LogicalVolume.hh"
-#include "G4Box.hh"
-#include "G4RunManager.hh"
+#include "G4Event.hh"
 #include "G4ParticleGun.hh"
+#include "G4GeneralParticleSource.hh"
 #include "G4ParticleTable.hh"
-#include "G4ParticleDefinition.hh"
+#include "G4MuonMinus.hh"
+#include "G4MuonPlus.hh"
 #include "G4SystemOfUnits.hh"
 #include "Randomize.hh"
 #include <cmath>
 
-PrimaryGeneratorAction::PrimaryGeneratorAction() : G4VUserPrimaryGeneratorAction(), fParticleGun(nullptr)
+#include "EcoMug.h" 
+
+PrimaryGeneratorAction::PrimaryGeneratorAction(G4String mode)
+: G4VUserPrimaryGeneratorAction(),
+  fParticleGun(nullptr),
+  fGPS(nullptr),
+  fMuonGen(nullptr),
+  fMode(mode)
 {
-    fParticleGun = new G4ParticleGun(1); // 1 particella per evento
-    
-    // Settiamo il Muone negativo
-    G4ParticleDefinition* particle = G4ParticleTable::GetParticleTable()->FindParticle("mu-");
-    fParticleGun->SetParticleDefinition(particle);
-    
-    // Energia tipica media dei muoni a livello del mare
-    fParticleGun->SetParticleEnergy(4.0 * GeV);
+    if (fMode == "muons") {
+        // Inizializza tutto per EcoMug
+        fParticleGun = new G4ParticleGun(1);
+        fMuonGen = new EcoMug();
+        fMuonGen->SetUseSky(); 
+    } else {
+        // Inizializza il General Particle Source per i Gamma
+        fGPS = new G4GeneralParticleSource();
+    }
 }
 
 PrimaryGeneratorAction::~PrimaryGeneratorAction()
 {
-    delete fParticleGun;
+    if (fParticleGun) delete fParticleGun;
+    if (fGPS) delete fGPS;
+    if (fMuonGen) delete fMuonGen;
 }
 
 void PrimaryGeneratorAction::GeneratePrimaries(G4Event* anEvent)
-{
-    // 1. POSIZIONE (Sopra il rivelatore)
-    // Creiamo un'area di generazione (tetto) di 2 metri x 2 metri
-    // a un'altezza Z = +1 metro rispetto al centro del rivelatore.
-    G4double halfSize = 1.0 * m; 
-    G4double x0 = halfSize * 2.0 * (G4UniformRand() - 0.5); // Da -1m a +1m
-    G4double y0 = halfSize * 2.0 * (G4UniformRand() - 0.5); // Da -1m a +1m
-    G4double z0 = 1.0 * m;                                  // Altezza
-    
-    fParticleGun->SetParticlePosition(G4ThreeVector(x0, y0, z0));
+{                  
+    if (fMode == "muons") {
+        // --- LOGICA MUONI (ECOMUG) CON REJECTION SAMPLING ---
+        
+        G4ThreeVector pos;
+        G4ThreeVector dir;
+        bool hit_telescope = false;
+        
+        // Loop: continuiamo a generare muoni in memoria finché non ne 
+        // troviamo uno che è garantito per colpire entrambe le palette.
+        while (!hit_telescope) {
+            fMuonGen->Generate();
 
-    // 2. DIREZIONE (Distribuzione angolare cosmica cos^2(theta))
-    // La matematica per generare una distribuzione cos^2(theta)
-    G4double u = std::cbrt(G4UniformRand()); // u = cos(theta). La radice cubica genera la PDF cos^2(theta)
-    G4double sinTheta = std::sqrt(1.0 - u * u);
-    G4double phi = 2.0 * M_PI * G4UniformRand(); // Angolo azimutale uniforme
+            // 1. Spariamo da SOPRA la paletta superiore (es. Z = 260 mm)
+            // da un'area di 8x8 cm centrata sul Canale 32
+            G4double x_pos = -375.0 * mm + (G4UniformRand() - 0.5) * 80.0 * mm; 
+            G4double y_pos = -125.0 * mm + (G4UniformRand() - 0.5) * 80.0 * mm; 
+            G4double z_pos = 220.0 * mm; 
+            pos = G4ThreeVector(x_pos, y_pos, z_pos);
+                            
+            G4double theta = fMuonGen->GetGenerationTheta();
+            G4double phi   = fMuonGen->GetGenerationPhi();
+            
+            // 2. Calcolo Direzione
+            dir.setX( std::sin(theta) * std::cos(phi) );
+            dir.setY( std::sin(theta) * std::sin(phi) );
+            
+            // Assicuriamoci che il muone viaggi verso il basso (-Z)
+            G4double dir_z = std::cos(theta);
+            if (dir_z > 0) dir_z = -dir_z; 
+            dir.setZ(dir_z); 
+            
+            // 3. Ray-tracing matematico per verificare l'impatto sulla paletta inferiore (Z = 50 mm)
+            if (dir.z() != 0) {
+                G4double t_low = (13.5 * mm - z_pos) / dir.z();
+                
+                if (t_low > 0) { // Il muone va nella direzione corretta
+                    G4double x_low = x_pos + t_low * dir.x();
+                    G4double y_low = y_pos + t_low * dir.y();
+                    
+                    // Controlla se colpisce l'area 70x70 mm del Canale 32
+                    if (std::abs(x_low - (-375.0 * mm)) <= 35.0 * mm && 
+                        std::abs(y_low - (-125.0 * mm)) <= 35.0 * mm) {
+                        
+                        hit_telescope = true; // Impatto confermato, esci dal loop!
+                    }
+                }
+            }
+        }
+                        
+        // Energia e Massa (applicate SOLO al muone vincente)
+        G4double p = fMuonGen->GetGenerationMomentum() * GeV; 
+        G4double mass = G4MuonMinus::MuonMinus()->GetPDGMass();
+        G4double ekin = std::sqrt(p*p + mass*mass) - mass;
 
-    // Calcoliamo le componenti del vettore momento
-    G4double px = sinTheta * std::cos(phi);
-    G4double py = sinTheta * std::sin(phi);
-    G4double pz = -u; // -u perché i muoni piovono verso il BASSO (-Z)
+        if (fMuonGen->GetCharge() < 0) {
+            fParticleGun->SetParticleDefinition(G4MuonMinus::MuonMinus());
+        } else {
+            fParticleGun->SetParticleDefinition(G4MuonPlus::MuonPlus());
+        }
 
-    fParticleGun->SetParticleMomentumDirection(G4ThreeVector(px, py, pz));
+        fParticleGun->SetParticlePosition(pos);
+        fParticleGun->SetParticleMomentumDirection(dir);
+        fParticleGun->SetParticleEnergy(ekin);
 
-    // Generiamo la particella!
-    fParticleGun->GeneratePrimaryVertex(anEvent);
+        // Geant4 ora simulerà la fisica ottica SOLO per questo muone perfetto
+        fParticleGun->GeneratePrimaryVertex(anEvent);
+    } 
+    else {
+        // --- LOGICA GAMMA (GPS VIA MACRO) ---
+        fGPS->GeneratePrimaryVertex(anEvent);
+    }
 }

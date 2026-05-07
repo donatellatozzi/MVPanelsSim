@@ -1,0 +1,50 @@
+# ---------- Setup di base ----------
+/control/verbose 2
+/run/verbose 1
+/event/verbose 0
+/tracking/verbose 0
+
+# ---------- Parametri del generatore (PrimaryGeneratorAction via G4GenericMessenger) ----------
+/prim/spectrum 1     # 0=powerlaw, 1=Gaisser
+/prim/emin 1.0       # GeV
+/prim/emax 100.0     # GeV
+/prim/alpha 2.7      # (usato solo se spectrum=0)
+
+# ---------- Inizializza (fisica+geometria) ----------
+/run/initialize
+
+# ---------- Visualizzazione ----------
+/vis/open OGL 900x700-0+0
+/vis/viewer/set/background black
+/vis/viewer/set/style surface
+/vis/viewer/set/auxiliaryEdge true
+/vis/viewer/set/autoRefresh true
+/vis/viewer/set/lineSegmentsPerCircle 100
+
+/vis/drawVolume
+/vis/viewer/set/viewpointVector 1 1 1
+/vis/viewer/zoom 1.3
+
+# Traiettorie
+/vis/scene/add/trajectories smooth
+/vis/scene/endOfEventAction accumulate
+/vis/filtering/trajectories/mode hard
+
+# Filtra: nascondi opticalphoton e gamma
+/vis/filtering/trajectories/create/particleFilter
+/vis/filtering/trajectories/particleFilter-0/add opticalphoton
+/vis/filtering/trajectories/particleFilter-0/invert true
+
+/vis/filtering/trajectories/create/particleFilter
+/vis/filtering/trajectories/particleFilter-1/add gamma
+/vis/filtering/trajectories/particleFilter-1/invert true
+
+# Colori per mu+/mu- usando il modello PID
+/vis/modeling/trajectories/create/drawByParticleID
+/vis/modeling/trajectories/select drawByParticleID-0
+/vis/modeling/trajectories/pid/set mu- blue
+/vis/modeling/trajectories/pid/set mu+ red
+
+# ---------- Esegui pochi eventi per vedere la distribuzione ----------
+/run/numberOfThreads 1
+/run/beamOn 50

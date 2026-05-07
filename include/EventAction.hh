@@ -3,7 +3,16 @@
 
 #include "G4UserEventAction.hh"
 #include "globals.hh"
-#include <set>
+#include <vector>
+#include <unordered_set>
+
+struct PhotonHitInfo {
+    G4int    eventID;
+    G4int    trackID;
+    G4double wavelength; // Qui salveremo direttamente i nm
+    G4double time;
+    G4int    sipmID;
+};
 
 class EventAction : public G4UserEventAction {
 public:
@@ -13,27 +22,39 @@ public:
     virtual void BeginOfEventAction(const G4Event*);
     virtual void EndOfEventAction(const G4Event*);
 
-    void AddSiPMHit(G4int id) { if(id>=0 && id<4) fSiPMHits[id]++; }
+    // Metodi per accumulare dati
+    void SetEinit(G4double e) { fEinit = e; }
     void AddEdep(G4double edep) { fEdep += edep; }
-    void AddTrackLength(G4double L) { fTrackLength += L; }
+    void AddTrackLength(G4double len) { fTrackLength += len; }
+    
     void AddScintProd() { fNScintProd++; }
-    void AddPhotonEntrato() { fNPhotonsEntrati++; } 
-    void SetInitialEnergy(G4double e) { fEinit = e; }
+    void AddPhotonEntrato() { fNPhotonsEntrati++; }
+    
+    bool IsPhotonUnique(G4int trackID);
+
+    // Hit su SiPM unico
     void RegisterSiPMHit(G4double time);
 
-    G4bool IsPhotonUnique(G4int tid) {
-      if (fCountedPhotons.find(tid) == fCountedPhotons.end()) {
-        fCountedPhotons.insert(tid);
-        return true;
-      }
-      return false;
-    }
+    // Passiamo l'energia raw, la convertiamo dentro
+    void AddPhotonData(G4int trackID, G4double energy, G4double time, G4int sipmID);
+    void SetEventStartTime(G4double t) { if (fEventStartTime < 0.) fEventStartTime = t; }
+    G4double GetEventStartTime() const { return fEventStartTime; }
 
 private:
-    G4double fEinit, fEdep, fTrackLength, fFirstHitTime;
-    G4int fNScintProd;
-    G4int fSiPMHits[4];
-    G4int fNPhotonsEntrati;
-    std::set<G4int> fCountedPhotons;
+    // Dati per Ntuple 0
+    G4double fEinit;
+    G4double fEdep;
+    G4double fTrackLength;
+    G4int    fNScintProd;
+    G4double fFirstHitTime;
+    G4int    fNPhotonsEntrati;
+    
+    // Un solo contatore hits
+    G4int    fSiPMHits;
+    
+    std::unordered_set<G4int> fCountedPhotons;
+    std::vector<PhotonHitInfo> fPhotonBuffer;
+    G4double fEventStartTime;
 };
+
 #endif

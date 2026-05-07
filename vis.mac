@@ -1,5 +1,6 @@
 # --- INIZIALIZZAZIONE ---
 /vis/open OGL 800x800-0+0
+/vis/verbose confirmations
 /vis/viewer/set/background black
 /vis/viewer/set/style surface
 /vis/viewer/set/autoRefresh true
@@ -13,11 +14,23 @@
 /vis/viewer/zoom 1.4
 /vis/viewer/set/auxiliaryEdge true
 
-# --- TRAIETTORIE E FILTRI ---
+# --- TRAIETTORIE ---
 /vis/scene/add/trajectories smooth
 /vis/scene/endOfEventAction accumulate
 
-# Nascondi i raggi gamma (Bremsstrahlung)
-/vis/filtering/trajectories/create/particleFilter gammaFilter
-/vis/filtering/trajectories/gammaFilter/add gamma
-/vis/filtering/trajectories/gammaFilter/invert true
+# (Consigliato con OpenGL) hard filtering
+/vis/filtering/trajectories/mode hard
+
+# --- FILTRI: escludi opticalphoton e gamma ---
+/vis/filtering/trajectories/create/particleFilter
+/vis/filtering/trajectories/particleFilter-0/add opticalphoton
+/vis/filtering/trajectories/particleFilter-0/invert true
+
+/vis/filtering/trajectories/create/particleFilter
+/vis/filtering/trajectories/particleFilter-1/add gamma
+/vis/filtering/trajectories/particleFilter-1/invert true
+
+# --- MODELLI: colora i muoni ---
+/vis/modeling/trajectories/create/drawByParticleID
+/vis/modeling/trajectories/drawByParticleID-0/set mu- blue
+/vis/modeling/trajectories/drawByParticleID-0/set mu+ red

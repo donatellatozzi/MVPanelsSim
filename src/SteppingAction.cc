@@ -2,83 +2,119 @@
 #include "EventAction.hh"
 #include "G4Step.hh"
 #include "G4RunManager.hh"
-#include "G4Electron.hh"
+#include "G4MuonMinus.hh"
 #include "G4OpticalPhoton.hh"
 #include "G4SystemOfUnits.hh"
-#include "G4AnalysisManager.hh"
 
-SteppingAction::SteppingAction() : G4UserSteppingAction() {}
+// Inizializziamo il puntatore fEventAction
+SteppingAction::SteppingAction(EventAction* eventAction)
+: G4UserSteppingAction(),
+  fEventAction(eventAction)
+{}
+
 SteppingAction::~SteppingAction() {}
 
 void SteppingAction::UserSteppingAction(const G4Step* step)
 {
+    if (!fEventAction) return; 
+
     auto track = step->GetTrack();
-    auto eventAction = (EventAction*)G4RunManager::GetRunManager()->GetUserEventAction();
+    G4double edep = step->GetTotalEnergyDeposit();
 
-    // 1. DATI ELETTRONE NEL PANNELLO
-    if (track->GetDefinition() == G4Electron::Definition() && track->GetTrackID() == 1) {
-        auto volume = track->GetVolume();
-        if (volume && volume->GetName() == "ScintPhys") {
-            if (step->IsFirstStepInVolume()) {
-                eventAction->SetInitialEnergy(step->GetPreStepPoint()->GetKineticEnergy());
-            }
-            eventAction->AddEdep(step->GetTotalEnergyDeposit());
-            eventAction->AddTrackLength(step->GetStepLength());
-        }
-    }
+    // --- 1. DEPOSITO DI ENERGIA ---
+    if (edep > 0.) {
+        auto volume = step->GetPreStepPoint()->GetPhysicalVolume();
+        if (volume) { 
+            G4String volName = volume->GetLogicalVolume()->GetName();
+            
+            // Controlla se siamo in parti attive/passive del rivelatore
+            if (volName.find("Scint") != std::string::npos ||
+                volName.find("G")  != std::string::npos ||
+                volName.find("Co")  != std::string::npos || 
+                volName.find("C")  != std::string::npos) 
+            {
+                fEventAction->AddEdep(edep);
 
-    // 2. FOTONI OTTICI: Solo tracciamento ingresso nelle fibre
-    if (track->GetDefinition() == G4OpticalPhoton::Definition()) {
-        auto prePoint = step->GetPreStepPoint();
-        auto postPoint = step->GetPostStepPoint();
-        
-        if (prePoint->GetPhysicalVolume() && postPoint->GetPhysicalVolume()) {
-            G4String preLogName = prePoint->GetPhysicalVolume()->GetLogicalVolume()->GetName();
-            G4String postLogName = postPoint->GetPhysicalVolume()->GetLogicalVolume()->GetName();
-
-            // CONTEGGIO: Entrata nella fibra (Passaggio dalla Colla al Cladding)
-            if (preLogName.find("LGlue") != std::string::npos && postLogName.find("LClad") != std::string::npos) {
-                if (eventAction->IsPhotonUnique(track->GetTrackID())) {
-                    eventAction->AddPhotonEntrato(); 
+                if (fEventAction->GetEventStartTime() < 0.) {
+                  fEventAction->SetEventStartTime(step->GetPreStepPoint()->GetGlobalTime());
+                }
+                
+                // Track Length solo per il Muone primario
+                if (track->GetTrackID() == 1 && track->GetDefinition() == G4MuonMinus::Definition()) {
+                     fEventAction->AddTrackLength(step->GetStepLength());
                 }
             }
+        }
+    }
 
-	    G4String postPhysName = postPoint->GetPhysicalVolume()->GetName();
+    // --- 2. FOTONI OTTICI ---
+    if (track->GetDefinition() == G4OpticalPhoton::Definition()) {
+        
+        // =========================================================
+        // A. CONTEGGIO FOTONI NELLE FIBRE (Logica della Presenza)
+        // =========================================================
+        // Invece di guardare i confini (pre/post), guardiamo semplicemente
+        // in che volume si trova il fotone in QUESTO momento.
+        auto currentVol = track->GetVolume();
+        if (currentVol) {
+            G4String currentLogName = currentVol->GetLogicalVolume()->GetName();
+            
+            // Se in questo istante il fotone sta volando nel Core o nel Clad...
+            if (currentLogName.find("C") != std::string::npos || currentLogName.find("Co") != std::string::npos) {
+                // ...e non lo avevamo mai contato prima, Aggiungiamolo!
+                if (fEventAction->IsPhotonUnique(track->GetTrackID())) {
+                    fEventAction->AddPhotonEntrato(); 
+                }
+            }
+        }
 
-	    // B. HIT SUI SiPM e ROOT
-            if (postPhysName.find("pSiPM") != std::string::npos) {
+        // =========================================================
+        // B. HIT SUL SiPM
+        // =========================================================
+        auto postPoint = step->GetPostStepPoint();
+        if (postPoint->GetPhysicalVolume()) {
+            
+            G4String postPhysName = postPoint->GetPhysicalVolume()->GetName();
+            G4String postLogName  = postPoint->GetPhysicalVolume()->GetLogicalVolume()->GetName();
+            
+            // Se il passo *finisce* sul SiPM
+            if (postPhysName.find("SiPM") != std::string::npos || postLogName.find("SiPM") != std::string::npos) {
                 
-                G4int sipmID = postPoint->GetPhysicalVolume()->GetCopyNo();
-                G4double hitTime = postPoint->GetGlobalTime();
-                
-                // Ntuple 0: Aggiorna Hit totali
-                eventAction->AddSiPMHit(sipmID);
-		eventAction->RegisterSiPMHit(hitTime);
+                // Assicuriamoci che nel passo prima fosse ancora FUORI dal SiPM
+                auto prePoint = step->GetPreStepPoint();
+                if (prePoint->GetPhysicalVolume()) {
+                    G4String prePhysName = prePoint->GetPhysicalVolume()->GetName();
+                    if (prePhysName.find("SiPM") == std::string::npos) {
+                        
+                        G4int sipmID = postPoint->GetPhysicalVolume()->GetCopyNo();
+                        G4double globalHitTime = postPoint->GetGlobalTime();
+                        G4double eventStartTime = fEventAction->GetEventStartTime();
+                        
+                        G4double hitTime = globalHitTime; 
+                        if (eventStartTime > 0.) {
+                            hitTime = globalHitTime - eventStartTime;
+                        }
+                        
+                        G4double energy = track->GetKineticEnergy(); 
+                        
+                        // Registriamo il segnale
+                        fEventAction->RegisterSiPMHit(hitTime);
+                        fEventAction->AddPhotonData(track->GetTrackID(), energy, hitTime, sipmID);
 
-                // Ntuple 1: Salva i dettagli
-                auto am = G4AnalysisManager::Instance();
-                G4int evtID = G4RunManager::GetRunManager()->GetCurrentEvent()->GetEventID();
-                
-                am->FillNtupleIColumn(1, 0, evtID);
-                am->FillNtupleIColumn(1, 1, track->GetTrackID());
-                am->FillNtupleDColumn(1, 2, track->GetKineticEnergy()/eV);
-                am->FillNtupleDColumn(1, 3, hitTime/ns);
-                am->FillNtupleIColumn(1, 4, sipmID);
-                am->AddNtupleRow(1);
-
-                // Uccidi il fotone
-                track->SetTrackStatus(fStopAndKill);
+                        // Spegniamo il fotone
+                        track->SetTrackStatus(fStopAndKill);
+                    }
+                }
             }
         }
     }
 
-    // 3. CONTEGGIO PRODUZIONE FOTONI (Solo Scintillazione, ignoriamo i WLS)
+    // --- 3. PRODUZIONE SCINTILLAZIONE ---
     auto secondaries = step->GetSecondaryInCurrentStep();
     for (auto sec : *secondaries) {
         if (sec->GetCreatorProcess()) {
-            G4String procName = sec->GetCreatorProcess()->GetProcessName();
-            if (procName == "Scintillation") {
-                eventAction->AddScintProd();
+            if (sec->GetCreatorProcess()->GetProcessName() == "Scintillation") {
+                fEventAction->AddScintProd();
             }
         }
     }

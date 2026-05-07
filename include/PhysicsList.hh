@@ -3,11 +3,13 @@
 
 #include "G4VModularPhysicsList.hh"
 
-class PhysicsList : public G4VModularPhysicsList {
+class PhysicsList : public G4VModularPhysicsList { // <-- Cambia qui
 public:
-  PhysicsList();
-  virtual ~PhysicsList();
+    PhysicsList();
+    virtual ~PhysicsList();
 
+    // Metodi necessari per G4VModularPhysicsList
+    //virtual void SetCuts() override; 
 };
 
-#endif 
+#endif

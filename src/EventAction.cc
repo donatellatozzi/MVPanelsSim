@@ -1,62 +1,109 @@
 #include "EventAction.hh"
 #include "G4AnalysisManager.hh"
 #include "G4SystemOfUnits.hh"
+#include "G4PhysicalConstants.hh" // Fondamentale per h_Planck e c_light
+#include "G4Event.hh"
+#include "G4RunManager.hh"
+#include "G4PrimaryVertex.hh"
+#include "G4PrimaryParticle.hh"
+#include <algorithm> 
 
-EventAction::EventAction() : G4UserEventAction() {
-    auto am = G4AnalysisManager::Instance();
-    am->SetDefaultFileType("root");
+EventAction::EventAction() : G4UserEventAction() {}
 
-    // --- NTUPLE 0: Sommario dell'Evento ---
-    am->CreateNtuple("Eventi", "Dati");
-    am->CreateNtupleDColumn("E_init_MeV");      // 0
-    am->CreateNtupleDColumn("Edep_MeV");        // 1
-    am->CreateNtupleDColumn("TrackLength_mm");  // 2
-    am->CreateNtupleIColumn("N_Scint");         // 3
-    am->CreateNtupleDColumn("T_First_ns");      // 4
-    am->CreateNtupleIColumn("PhotonsInFiber");  // 5
-    am->CreateNtupleIColumn("Hits_SiPM_0");     // 6
-    am->CreateNtupleIColumn("Hits_SiPM_1");     // 7
-    am->CreateNtupleIColumn("Hits_SiPM_2");     // 8
-    am->CreateNtupleIColumn("Hits_SiPM_3");     // 9
-    am->FinishNtuple(0);
-
-    // --- NTUPLE 1: Dettaglio dei Fotoni che colpiscono i SiPM ---
-    am->CreateNtuple("Fotoni", "Dati Fotoni");
-    am->CreateNtupleIColumn("EventID");         // 0
-    am->CreateNtupleIColumn("TrackID");         // 1
-    am->CreateNtupleDColumn("E_Kinetic_eV");    // 2
-    am->CreateNtupleDColumn("Arrival_Time_ns"); // 3
-    am->CreateNtupleIColumn("SiPM_ID");         // 4
-    am->FinishNtuple(1);
-}
+EventAction::~EventAction() {}
 
 void EventAction::BeginOfEventAction(const G4Event*) {
-    fEinit = 0.; fEdep = 0.; fTrackLength = 0.;
+    // Reset variabili
+    fEinit = 0.;
+    fEdep = 0.;
+    fTrackLength = 0.;
     fNScintProd = 0;
     fFirstHitTime = 999999.*ns;
-    for(int i=0; i<4; i++) fSiPMHits[i] = 0;
     fNPhotonsEntrati = 0;
+    fSiPMHits = 0; // Reset contatore unico
+
+    fEventStartTime = -1.0;
+    
     fCountedPhotons.clear();
+    fPhotonBuffer.clear();
+}
+
+bool EventAction::IsPhotonUnique(G4int trackID) {
+    // insert() ritorna una coppia: un iteratore e un booleano. 
+    // Il booleano è 'true' se l'elemento è stato inserito (cioè non c'era),
+    // 'false' se l'elemento era già presente. Fa tutto in un colpo solo!
+    return fCountedPhotons.insert(trackID).second;
 }
 
 void EventAction::RegisterSiPMHit(G4double time) {
     if (time < fFirstHitTime) fFirstHitTime = time;
+    fSiPMHits++;
 }
 
-void EventAction::EndOfEventAction(const G4Event*) {
-    auto am = G4AnalysisManager::Instance();
+void EventAction::AddPhotonData(G4int trackID, G4double energy, G4double time, G4int sipmID) {
+    PhotonHitInfo hit;
+    hit.trackID = trackID;
     
-    // Riempiamo Ntuple 0 (Riassunto Evento)
+    // --- CONVERSIONE ENERGIA -> LUNGHEZZA D'ONDA ---
+    // Formula: lambda = (h * c) / E
+    // Geant4 gestisce le unità interne automaticamente qui.
+    // energy è in MeV (interno), h_Planck*c_light è MeV*mm (interno).
+    // Il risultato "lambda" sarà una lunghezza in mm.
+    G4double lambda = (h_Planck * c_light) / energy;
+    
+    // Salviamo nel buffer dividendo per 'nm' così otteniamo un numero puro in nanometri
+    hit.wavelength = lambda / nm; 
+    
+    hit.time    = time;
+    hit.sipmID  = sipmID;
+    fPhotonBuffer.push_back(hit);
+}
+
+void EventAction::EndOfEventAction(const G4Event* event) {
+    auto am = G4AnalysisManager::Instance();
+
+    G4ThreeVector vtxPos(0,0,0);
+    G4ThreeVector dir(0,0,0);
+
+    if (event->GetNumberOfPrimaryVertex() > 0) {
+        G4PrimaryVertex* vertex = event->GetPrimaryVertex(0);
+	vtxPos = vertex->GetPosition();
+	
+        if (vertex->GetNumberOfParticle() > 0) {
+	  G4PrimaryParticle* primary = vertex->GetPrimary(0);
+	  fEinit = primary->GetTotalEnergy();
+	  dir = primary->GetMomentumDirection();
+        }
+    }
+
+    // --- NTUPLE 0 (Sommario) ---
     am->FillNtupleDColumn(0, 0, fEinit/MeV);
     am->FillNtupleDColumn(0, 1, fEdep/MeV);
     am->FillNtupleDColumn(0, 2, fTrackLength/mm);
     am->FillNtupleIColumn(0, 3, fNScintProd);
-    am->FillNtupleDColumn(0, 4, (fFirstHitTime > 900000.*ns) ? -1.0 : fFirstHitTime/ns);
+    am->FillNtupleDColumn(0, 4, (fFirstHitTime > 90000.*ns) ? -1.0 : fFirstHitTime/ns);
     am->FillNtupleIColumn(0, 5, fNPhotonsEntrati);
-    for(int i=0; i<4; i++) {
-        am->FillNtupleIColumn(0, 6+i, fSiPMHits[i]);
-    }
-    am->AddNtupleRow(0);
-}
+    am->FillNtupleIColumn(0, 6, fSiPMHits); // Colonna 6: Totale Hits
+    am->FillNtupleDColumn(0, 7, vtxPos.x()/mm);
+    am->FillNtupleDColumn(0, 8, vtxPos.y()/mm);
+    am->FillNtupleDColumn(0, 9, vtxPos.z()/mm);
+    am->FillNtupleDColumn(0, 10, dir.x());
+    am->FillNtupleDColumn(0, 11, dir.y());
+    am->FillNtupleDColumn(0, 12, dir.z());
+    
+    am->AddNtupleRow(0); 
 
-EventAction::~EventAction() {}
+    // --- NTUPLE 1 (Dettaglio) ---
+    G4int evtID = event->GetEventID();
+    
+    for (const auto& hit : fPhotonBuffer) {
+        am->FillNtupleIColumn(1, 0, evtID);
+        am->FillNtupleIColumn(1, 1, hit.trackID);
+        // hit.wavelength è già un numero puro in nm (convertito in AddPhotonData)
+        am->FillNtupleDColumn(1, 2, hit.wavelength); 
+        am->FillNtupleDColumn(1, 3, hit.time/ns);
+        am->FillNtupleIColumn(1, 4, hit.sipmID);
+	
+        am->AddNtupleRow(1); 
+    }
+}

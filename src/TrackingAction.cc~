@@ -1,0 +1,19 @@
+#include "TrackingAction.hh"
+#include "G4Track.hh"
+#include "G4OpticalPhoton.hh"
+#include "G4TrackingManager.hh"
+
+void TrackingAction::PreUserTrackingAction(const G4Track* track)
+{
+  // Se la particella è un fotone ottico
+  if(track->GetDefinition() == G4OpticalPhoton::OpticalPhotonDefinition())
+  {
+      // Diciamo al Manager: NON salvare la traiettoria per questa particella
+      fpTrackingManager->SetStoreTrajectory(false);
+  }
+  else
+  {
+      // Per tutte le altre (Muoni, Elettroni, etc.) salvala pure
+      fpTrackingManager->SetStoreTrajectory(true);
+  }
+}

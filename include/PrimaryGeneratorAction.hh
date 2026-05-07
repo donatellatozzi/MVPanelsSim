@@ -2,17 +2,27 @@
 #define PrimaryGeneratorAction_h 1
 
 #include "G4VUserPrimaryGeneratorAction.hh"
-#include "G4ParticleGun.hh"
+#include "globals.hh"
 
-class PrimaryGeneratorAction : public G4VUserPrimaryGeneratorAction {
-public:
-  PrimaryGeneratorAction();
-  virtual ~PrimaryGeneratorAction();
-  virtual void GeneratePrimaries(G4Event*);
+class G4ParticleGun;
+class G4GeneralParticleSource;
+class G4Event;
+class EcoMug; 
 
-private:
-  G4ParticleGun* fParticleGun;
+class PrimaryGeneratorAction : public G4VUserPrimaryGeneratorAction
+{
+  public:
+    // Aggiungiamo il parametro "mode" al costruttore
+    PrimaryGeneratorAction(G4String mode);
+    virtual ~PrimaryGeneratorAction();
 
+    virtual void GeneratePrimaries(G4Event*);
+
+  private:
+    G4ParticleGun* fParticleGun;
+    G4GeneralParticleSource* fGPS;
+    EcoMug* fMuonGen; 
+    G4String fMode; // Salverà "muons" o "gamma"
 };
 
 #endif
