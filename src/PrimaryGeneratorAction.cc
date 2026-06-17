@@ -41,47 +41,55 @@ void PrimaryGeneratorAction::GeneratePrimaries(G4Event* anEvent)
     if (fMode == "muons") {
         // --- LOGICA MUONI (ECOMUG) CON REJECTION SAMPLING ---
         
+        // Dimensioni del pannello Nested (vedi DetectorConstruction::ConstructNestedPanel:
+        // scintX/Y sono semi-estensioni, blackZ = scintZ + thTyvek + thAl + thBlack è la
+        // semi-estensione totale lungo Z, cioè la quota della faccia superiore del pannello).
+        const G4double kPanelHalfX = 625.0 * mm;
+        const G4double kPanelHalfY = 275.0 * mm;
+        const G4double kPanelTopZ  = 25.7  * mm; // 25.0 (scint) + 0.4 + 0.1 + 0.2 (involucri)
+        const G4double kMarginZ    = 50.0  * mm; // margine d'aria sopra il pannello
+        const G4double kStartZ     = kPanelTopZ + kMarginZ;
+
         G4ThreeVector pos;
         G4ThreeVector dir;
-        bool hit_telescope = false;
-        
-        // Loop: continuiamo a generare muoni in memoria finché non ne 
-        // troviamo uno che è garantito per colpire entrambe le palette.
-        while (!hit_telescope) {
+        bool hit_panel = false;
+
+        // Loop: continuiamo a generare muoni in memoria finché non ne
+        // troviamo uno che è garantito per colpire il pannello.
+        while (!hit_panel) {
             fMuonGen->Generate();
 
-            // 1. Spariamo da SOPRA la paletta superiore (es. Z = 260 mm)
-            // da un'area di 8x8 cm centrata sul Canale 32
-            G4double x_pos = -375.0 * mm + (G4UniformRand() - 0.5) * 80.0 * mm; 
-            G4double y_pos = -125.0 * mm + (G4UniformRand() - 0.5) * 80.0 * mm; 
-            G4double z_pos = 220.0 * mm; 
-            pos = G4ThreeVector(x_pos, y_pos, z_pos);
-                            
+            // 1. Spariamo da SOPRA tutto il pannello (rettangolo pari alla sua
+            // estensione XY), con un piccolo margine d'aria sopra la faccia superiore.
+            G4double x_pos = (G4UniformRand() - 0.5) * 2.0 * kPanelHalfX;
+            G4double y_pos = (G4UniformRand() - 0.5) * 2.0 * kPanelHalfY;
+            pos = G4ThreeVector(x_pos, y_pos, kStartZ);
+
             G4double theta = fMuonGen->GetGenerationTheta();
             G4double phi   = fMuonGen->GetGenerationPhi();
-            
+
             // 2. Calcolo Direzione
             dir.setX( std::sin(theta) * std::cos(phi) );
             dir.setY( std::sin(theta) * std::sin(phi) );
-            
+
             // Assicuriamoci che il muone viaggi verso il basso (-Z)
             G4double dir_z = std::cos(theta);
-            if (dir_z > 0) dir_z = -dir_z; 
-            dir.setZ(dir_z); 
-            
-            // 3. Ray-tracing matematico per verificare l'impatto sulla paletta inferiore (Z = 50 mm)
+            if (dir_z > 0) dir_z = -dir_z;
+            dir.setZ(dir_z);
+
+            // 3. Ray-tracing matematico per verificare l'impatto sulla faccia superiore del pannello
             if (dir.z() != 0) {
-                G4double t_low = (13.5 * mm - z_pos) / dir.z();
-                
-                if (t_low > 0) { // Il muone va nella direzione corretta
-                    G4double x_low = x_pos + t_low * dir.x();
-                    G4double y_low = y_pos + t_low * dir.y();
-                    
-                    // Controlla se colpisce l'area 70x70 mm del Canale 32
-                    if (std::abs(x_low - (-375.0 * mm)) <= 35.0 * mm && 
-                        std::abs(y_low - (-125.0 * mm)) <= 35.0 * mm) {
-                        
-                        hit_telescope = true; // Impatto confermato, esci dal loop!
+                G4double t_top = (kPanelTopZ - kStartZ) / dir.z();
+
+                if (t_top > 0) { // Il muone va nella direzione corretta
+                    G4double x_top = x_pos + t_top * dir.x();
+                    G4double y_top = y_pos + t_top * dir.y();
+
+                    // Controlla se colpisce l'area del pannello
+                    if (std::abs(x_top) <= kPanelHalfX &&
+                        std::abs(y_top) <= kPanelHalfY) {
+
+                        hit_panel = true; // Impatto confermato, esci dal loop!
                     }
                 }
             }

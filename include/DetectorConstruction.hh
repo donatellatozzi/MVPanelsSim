@@ -32,9 +32,10 @@ class DetectorConstruction : public G4VUserDetectorConstruction
 
     void DefineMaterials();
 
-    // Dividiamo la costruzione in due sottometodi privati:
+    // Dividiamo la costruzione in sottometodi privati:
     G4VPhysicalVolume* ConstructStandardPanel();
     G4VPhysicalVolume* ConstructSpiralPanel();
+    G4VPhysicalVolume* ConstructNestedPanel();
   
     void BuildContinuousSpiralSector(G4LogicalVolume* motherVolume, G4ThreeVector center, G4int sectorID, G4ThreeVector sipmPos);
    

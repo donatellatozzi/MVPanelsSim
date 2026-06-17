@@ -17,9 +17,9 @@ DetectorMessenger::DetectorMessenger(DetectorConstruction* Det)
   fWrapCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
 
   fGeometryCmd = new G4UIcmdWithAString("/detector/setGeometry", this);
-  fGeometryCmd->SetGuidance("Seleziona il tipo di geometria (Standard o Spiral).");
+  fGeometryCmd->SetGuidance("Seleziona il tipo di geometria (Standard, Spiral o Nested).");
   fGeometryCmd->SetParameterName("geometry", false);
-  fGeometryCmd->SetCandidates("Standard Spiral");
+  fGeometryCmd->SetCandidates("Standard Spiral Nested");
   fGeometryCmd->AvailableForStates(G4State_PreInit, G4State_Idle);
 }
 

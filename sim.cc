@@ -42,7 +42,7 @@ int main(int argc, char** argv)
     else {
         G4cerr << "ERRORE: Numero di argomenti non valido!" << G4endl;
         G4cerr << "USO GUI DEFAULT : ./sim" << G4endl;
-        G4cerr << "USO GUI CUSTOM  : ./sim gui <gamma/muons> <Spiral/Standard> <Tyvek/Mylar>" << G4endl;
+        G4cerr << "USO GUI CUSTOM  : ./sim gui <gamma/muons> <Spiral/Standard/Nested> <Tyvek/Mylar>" << G4endl;
         G4cerr << "USO BATCH MUONI : ./sim muons <Geometry> <Wrapping> <Output.root> <nEvents>" << G4endl;
         G4cerr << "USO BATCH GAMMA : ./sim gamma <Geometry> <Wrapping> <Output.root> <macro.mac>" << G4endl;
         return 1;
