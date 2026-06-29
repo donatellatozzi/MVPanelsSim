@@ -1,0 +1,17 @@
+# Elettrone 500 MeV al centro del pannello, direzione verticale verso il basso
+
+/gps/particle e-
+
+# Posizione: centro XY del pannello, ~50 mm sopra la faccia superiore (Z=25.7 mm)
+/gps/pos/type Point
+/gps/pos/centre 0 0 76 mm
+
+# Direzione: verticale verso il basso
+/gps/direction 0 0 -1
+
+# Energia cinetica: 500 MeV (mono-energetica)
+/gps/ene/type Mono
+/gps/ene/mono 500 MeV
+
+# Avvia gli eventi
+/run/beamOn 1000

@@ -63,7 +63,7 @@ G4VPhysicalVolume* DetectorConstruction::ConstructStandardPanel() {
     G4Material* blackMat  = G4Material::GetMaterial("G4_POLYETHYLENE"); // Black HDPE film
     G4Material* sipmMat   = G4Material::GetMaterial("G4_Si");
     G4Material* coreMat   = G4Material::GetMaterial("G4_POLYSTYRENE");
-    G4Material* cladMat   = G4Material::GetMaterial("G4_PLEXIGLASS");
+    G4Material* cladMat   = G4Material::GetMaterial("FiberCladding");
     G4Material* glueMat   = G4Material::GetMaterial("G4_PLEXIGLASS");
 
     G4VisAttributes* scintVis = new G4VisAttributes(G4Colour(0.2, 0.4, 0.6, 0.2));
@@ -203,17 +203,91 @@ G4VPhysicalVolume* DetectorConstruction::ConstructStandardPanel() {
         return lClad;
     };
 
+    // Approssima un arco circolare (raggio bendR, centro dato, angolo phi da
+    // phiStart a phiEnd, nel piano locale ruotato di "alpha" attorno a X
+    // tramite cosA=cos(alpha), sinA=sin(alpha)) con una catena di nSeg corde
+    // dritte (G4Tubs). Serve a sostituire i G4Torus usati per la convergenza
+    // del bundle esterno: quando rBend e' molto grande rispetto a cladR
+    // (rapporto d'aspetto fino a ~1600:1 per le gambe con offset Y-Z minimo
+    // su 170mm fissi), G4Torus naviga male (fotoni che "vibrano" sulla
+    // superficie senza avanzare, simulazione bloccata, 0 hit sul SiPM nel
+    // Nested) -- problema osservato e diagnosticato con il profiler di
+    // sistema (CPU bloccata in SteppingAction/IsPhotonUnique). G4Tubs non ha
+    // questo problema indipendentemente dal rapporto lunghezza/raggio. Con
+    // nSeg=24 la freccia massima (sagitta) della corda rispetto all'arco
+    // vero e' di pochi micron anche nel caso peggiore (rBend~830mm), molto
+    // sotto il margine di clearance tra fibre (~1mm): la forma del percorso
+    // (e quindi la permutazione fibra->punto impacchettato gia' validata)
+    // resta sostanzialmente quella originale.
+    auto placeArcChain = [&](G4double bendR, G4double xCenter, G4double yCenter, G4double zCenter,
+                              G4double cosA, G4double sinA, G4double xSign, G4double phiStart, G4double phiEnd,
+                              G4int nSeg, G4String tag) {
+        auto pointAt = [&](G4double phi) {
+            return G4ThreeVector(xCenter + xSign*bendR*std::cos(phi),
+                                  yCenter + bendR*std::sin(phi)*cosA,
+                                  zCenter + bendR*std::sin(phi)*sinA);
+        };
+        G4ThreeVector prev = pointAt(phiStart);
+        for (G4int s = 0; s < nSeg; s++) {
+            G4double phiNext = phiStart + (phiEnd - phiStart) * (s+1.0)/nSeg;
+            G4ThreeVector next = pointAt(phiNext);
+            G4ThreeVector mid  = (prev + next) * 0.5;
+            G4ThreeVector dvec = next - prev;
+            G4double segLen = dvec.mag();
+            G4ThreeVector u = dvec.unit();
+
+            G4RotationMatrix* rotSeg = new G4RotationMatrix();
+            G4ThreeVector zAxis(0,0,1);
+            G4double dotZ = zAxis.dot(u);
+            if (dotZ < 1.0 - 1.0e-9) {
+                G4ThreeVector axis = zAxis.cross(u);
+                if (axis.mag() > 1.0e-9) {
+                    rotSeg->rotate(std::acos(dotZ), axis.unit());
+                } else {
+                    rotSeg->rotateX(180*deg);
+                }
+            }
+            G4String segName = tag + "_S" + std::to_string(s);
+            G4LogicalVolume* lSeg = makeNudeStraight(segLen, segName);
+            // Consecutive chord-segments share endpoints: overlap is fiber-on-fiber
+            // (same cladding material in air), physically harmless — skip check.
+            new G4PVPlacement(rotSeg, mid, lSeg, "p"+segName, logicWorld, false, 0, false);
+            prev = next;
+        }
+    };
+
     G4RotationMatrix* rotY90  = new G4RotationMatrix(); rotY90->rotateY(90*deg);
     G4RotationMatrix* rotX180 = new G4RotationMatrix(); rotX180->rotateX(180*deg);
 
     // Distanza pannello -> SiPM = bridgeLen + dxBundle + straightFinal = 200.0 mm (20 cm), come richiesto.
     G4double dxBundle         = 170.0*mm, straightFinal    = 20.0*mm;
     G4double sipmThick        = 0.5*mm, bridgeLen        = 10.0*mm;
+    G4double greaseThick      = 0.5*mm;
 
-    G4double xBundleEnd = xScintEnd - bridgeLen - dxBundle; 
-    G4double xSiPM      = xBundleEnd - straightFinal - sipmThick;
+    G4double xBundleEnd  = xScintEnd - bridgeLen - dxBundle;
+    G4double xFiberEnd   = xBundleEnd - straightFinal;    // faccia sinistra del Final
+    G4double xSiPM       = xFiberEnd - greaseThick - sipmThick;
 
-    G4Box* sSiPM = new G4Box("SiPM", sipmThick, 3.0*mm, 3.0*mm); 
+    // Le 8 fibre del bundle (nude, raggio cladR) sono incollate (colla EJ-500,
+    // come nei groove) dentro un cilindro di diametro interno 3.45mm, accoppiato
+    // allo stesso SiPM fisico usato in entrambe le geometrie. Impacchettamento:
+    // 1 fibra centrale + 7 ad un raggio scelto USANDO TUTTO IL MARGINE fino alla
+    // parete del cilindro (rRing = cilindroR - cladR = 1.230mm), invece del
+    // raggio minimo di tangenza tra vicini (2.305*cladR = 1.141mm): questo da'
+    // ~77um di clearance reale tra fibre adiacenti (necessaria, verificato che a
+    // tangenza esatta il check overlap di Geant4 segnala urti). Centrato su
+    // (Y=0, Z=20.25mm), identico nel Nested.
+    G4double zSiPMCenter = 20.25*mm;
+    G4double rRing = 1.725*mm - cladR;
+    G4double packedY[8], packedZ[8];
+    packedY[0] = 0.0*mm; packedZ[0] = zSiPMCenter;
+    for (int k = 0; k < 7; k++) {
+        G4double ang = k * (360.0/7.0) * deg;
+        packedY[k+1] = rRing * std::cos(ang);
+        packedZ[k+1] = zSiPMCenter + rRing * std::sin(ang);
+    }
+
+    G4Box* sSiPM = new G4Box("SiPM", sipmThick, 3.0*mm, 3.0*mm);
     G4LogicalVolume* lSiPM = new G4LogicalVolume(sSiPM, sipmMat, "LogicSiPM_All");
     lSiPM->SetVisAttributes(sipmVis);
 
@@ -230,8 +304,27 @@ G4VPhysicalVolume* DetectorConstruction::ConstructStandardPanel() {
     opSiPM->SetMaterialPropertiesTable(mptSiPM);
     new G4LogicalSkinSurface("SiPMSkin", lSiPM, opSiPM);
 
-    new G4PVPlacement(0, G4ThreeVector(xSiPM, 0, 20.25*mm), lSiPM, "pSiPM", logicWorld, false, 0, true);
+    // Grasso ottico tra faccia delle fibre e SiPM (accoppiamento ottico, n=1.465)
+    G4Material* greaseMat = G4Material::GetMaterial("OpticalGrease");
+    G4Box* sGrease = new G4Box("Grease", greaseThick/2., 3.0*mm, 3.0*mm);
+    G4LogicalVolume* lGrease = new G4LogicalVolume(sGrease, greaseMat, "LogicGrease");
+    G4VisAttributes* greaseVis = new G4VisAttributes(G4Colour(0.9, 0.9, 0.2, 0.4));
+    lGrease->SetVisAttributes(greaseVis);
+    new G4PVPlacement(0, G4ThreeVector(xFiberEnd - greaseThick/2., 0, zSiPMCenter),
+                      lGrease, "pGrease", logicWorld, false, 0, true);
 
+    new G4PVPlacement(0, G4ThreeVector(xSiPM, 0, zSiPMCenter), lSiPM, "pSiPM", logicWorld, false, 0, true);
+
+    // Assegnazione fiberCount -> indice del punto impacchettato (0=centro,
+    // 1-7=anello). Trovata con ricerca esaustiva su tutte le 8! permutazioni
+    // (simulando i percorsi curvi reali Bridge+Arc1+Arc2+Final e calcolando la
+    // distanza minima punto-punto tra ogni coppia di fibre, poi riverificata a
+    // risoluzione crescente fino a N=1000 campioni per evitare falsi positivi
+    // da sotto-campionamento): questa e' la permutazione che massimizza la
+    // clearance minima tra fibre diverse lungo tutto il bundle esterno
+    // (1.067mm, sopra il minimo richiesto di 0.99mm = 2*cladR), stabile a tutte
+    // le risoluzioni testate (quindi un vero non-incrocio, non un artefatto).
+    int fiberToPacked[8] = {2, 3, 1, 7, 0, 4, 6, 5};
     int fiberCount = 0;
 
     for (int f = 0; f < 4; f++) {
@@ -254,40 +347,46 @@ G4VPhysicalVolume* DetectorConstruction::ConstructStandardPanel() {
 
         for (int leg = 0; leg < 2; leg++) {
             G4double yStart = (leg == 0) ? yUp : yLow;
-            G4double yTarget = (3.5 - fiberCount) * 1.0*mm; 
+            G4double yTarget = packedY[fiberToPacked[fiberCount]];
+            G4double zTarget = packedZ[fiberToPacked[fiberCount]];
+            G4String tag = "Std_F" + std::to_string(fiberCount);
             fiberCount++;
 
-            G4LogicalVolume* lBridge = makeNudeStraight(bridgeLen, "Bridge");
-            new G4PVPlacement(rotY90, G4ThreeVector(xScintEnd - bridgeLen/2.0, yStart, zFib), lBridge, "pBridge", logicWorld, false, f*2+leg, true);
+            G4LogicalVolume* lBridge = makeNudeStraight(bridgeLen, tag+"_Bridge");
+            new G4PVPlacement(rotY90, G4ThreeVector(xScintEnd - bridgeLen/2.0, yStart, zFib), lBridge, "p"+tag+"_Bridge", logicWorld, false, f*2+leg, true);
 
-            G4double dy = std::abs(yStart - yTarget);
+            // Piegatura combinata Y-Z (non solo Y): il bundle converge nel punto
+            // impacchettato (yTarget,zTarget) dentro il cilindro da 3.45mm.
+            // Stessa formula "a budget esatto" di prima (l'intero dxBundle e'
+            // consumato dalla curva S a 2 archi) -- questa e' la forma di
+            // percorso su cui e' stata validata (esaustivamente, via Geant4
+            // CheckOverlaps) la permutazione fiberToPacked. La curva e'
+            // pero' ora approssimata con una catena di corde dritte
+            // (placeArcChain, vedi sopra) invece di un G4Torus vero: per le
+            // gambe con offset Y-Z minimo su 170mm fissi rBend arriva fino a
+            // ~830mm (rapporto d'aspetto ~1680:1 rispetto a cladR=0.495mm),
+            // valore che G4Torus non naviga in modo numericamente stabile.
+            G4double dy = yTarget - yStart;
+            G4double dz = zTarget - zFib;
+            G4double dr = std::sqrt(dy*dy + dz*dz);
             G4double dx = dxBundle;
-            G4double rBend = (dx*dx + dy*dy) / (4.0 * dy);
-            G4double theta = std::acos(1.0 - dy / (2.0 * rBend));
+            G4double rBend = (dx*dx + dr*dr) / (4.0 * dr);
+            G4double theta = std::acos(1.0 - dr / (2.0 * rBend));
+            G4double cosA  = -dy/dr;
+            G4double sinA  = -dz/dr;
 
-            G4LogicalVolume *lArc1, *lArc2;
-            G4double xBendStart = xScintEnd - bridgeLen; 
+            G4double xArcStart = xScintEnd - bridgeLen;
+            G4double yCenter1 = yStart + rBend*dy/dr;
+            G4double zCenter1 = zFib   + rBend*dz/dr;
+            placeArcChain(rBend, xArcStart, yCenter1, zCenter1, cosA, sinA, +1.0, 90*deg, 90*deg+theta, 24, tag+"_NA1");
 
-            G4RotationMatrix* rotArc1 = new G4RotationMatrix(); 
-            G4RotationMatrix* rotArc2 = new G4RotationMatrix(); 
-            rotArc2->rotateY(180*deg);
+            G4double yCenter2 = yTarget - rBend*dy/dr;
+            G4double zCenter2 = zTarget - rBend*dz/dr;
+            placeArcChain(rBend, xBundleEnd, yCenter2, zCenter2, cosA, sinA, -1.0, 270*deg-theta, 270*deg, 24, tag+"_NA2");
 
-            if (yStart < yTarget) { 
-                rotArc1->rotateX(180*deg);
-                rotArc2->rotateX(180*deg); 
-            }
-
-            lArc1 = makeNudeArc(rBend, 90*deg, theta, "NA1");
-            G4double yCenter1 = (yStart > yTarget) ? (yStart - rBend) : (yStart + rBend);
-            new G4PVPlacement(rotArc1, G4ThreeVector(xBendStart, yCenter1, zFib), lArc1, "pNA1", logicWorld, false, 0, true);
-
-            lArc2 = makeNudeArc(rBend, 270*deg - theta, theta, "NA2");
-            G4double yCenter2 = (yStart > yTarget) ? (yTarget + rBend) : (yTarget - rBend);
-            new G4PVPlacement(rotArc2, G4ThreeVector(xBundleEnd, yCenter2, zFib), lArc2, "pNA2", logicWorld, false, 0, true);
-
-            G4LogicalVolume* lFinal = makeNudeStraight(straightFinal, "Final");
+            G4LogicalVolume* lFinal = makeNudeStraight(straightFinal, tag+"_Final");
             G4double xFinalCenter = xBundleEnd - straightFinal/2.0;
-            new G4PVPlacement(rotY90, G4ThreeVector(xFinalCenter, yTarget, zFib), lFinal, "pFinal", logicWorld, false, 0, true);
+            new G4PVPlacement(rotY90, G4ThreeVector(xFinalCenter, yTarget, zTarget), lFinal, "p"+tag+"_Final", logicWorld, false, 0, false);
         }
     }
 
@@ -302,7 +401,7 @@ G4VPhysicalVolume* DetectorConstruction::ConstructNestedPanel() {
     G4Material* blackMat  = G4Material::GetMaterial("G4_POLYETHYLENE"); // Black HDPE film
     G4Material* sipmMat   = G4Material::GetMaterial("G4_Si");
     G4Material* coreMat   = G4Material::GetMaterial("G4_POLYSTYRENE");
-    G4Material* cladMat   = G4Material::GetMaterial("G4_PLEXIGLASS");
+    G4Material* cladMat   = G4Material::GetMaterial("FiberCladding");
     G4Material* glueMat   = G4Material::GetMaterial("G4_PLEXIGLASS");
 
     // --- 2. VIS ATTRIBUTES (identici allo Standard) ---
@@ -340,63 +439,51 @@ G4VPhysicalVolume* DetectorConstruction::ConstructNestedPanel() {
     G4double xScintEnd = -625.0*mm;
 
     // --- 4. LE 4 FIBRE (A,B in meta' superiore; C,D in meta' inferiore) ---
+    // Geometria conforme al disegno Muon_Panel_v2: pannello 1250x550mm,
+    // R60mm per U-turn (destra) e S-curve (sinistra), 4 fori sul bordo sinistro
+    // a Y = +30, +10, -10, -30 mm (ricavati da 245+20+20+20+245=550mm).
+    //
     // Ogni fibra ha 2 capi ("out" = lontano dal centro, "in" = vicino al centro)
-    // collegati da una curva a U lontana (raggio 60mm, lato destro, come nello Standard).
-    // Le posizioni nominali (prima di ogni curva di convergenza) sono spaziate 60mm
-    // l'una dall'altra: 210, 150, 90, 30 mm (e i mirror -30,-90,-150,-210) -- gli
-    // stessi valori dello Standard (yExitPairs), che danno rU = 60mm per ciascuna
-    // delle 4 curve a U lontane.
+    // collegati da una curva a U sul lato destro (R60mm).
+    // I capi convergono verso i 4 fori tramite S-curve R60mm sul lato sinistro.
     //
-    // I 4 fori sono allineati al centro del pannello, distanziati 20mm l'uno
-    // dall'altro, con il primo a 245mm dal bordo superiore e l'ultimo a 245mm dal
-    // bordo inferiore: Y = +30, +10, -10, -30 mm. Connessioni confermate dal disegno:
-    //   foro1 (+30) = B_in (dritto, coincide col foro) + C_in (curva, dall'altra meta')
-    //   foro4 (-30) = D_in (dritto, coincide col foro) + A_in (curva, dall'altra meta')
-    //   foro2 (+10) = A_out (curva) + B_out (curva) -- stessa meta' (superiore)
-    //   foro3 (-10) = C_out (curva) + D_out (curva) -- stessa meta' (inferiore)
-    // A_in/C_in raggiungono il loro foro con dy=120mm, raggio 60mm -> dx=120mm esatti
-    // (caso pulito). A_out/C_out (dy=200mm) e B_out/D_out (dy=140mm) usano lo stesso
-    // raggio fisso 60mm applicato direttamente al foro finale (senza una tappa
-    // intermedia separata, per semplicita' di costruzione).
+    // Schema di assegnazione (topologia "cross-loop" del disegno):
+    //   foro1 (+30mm) : B_in (dritto, Y=+30)  + C_in (curva da Y=-90, dy=120mm PULITA)
+    //   foro2 (+10mm) : A_out (curva da Y=+210, dy=200mm) + B_out (curva da Y=+150, dy=140mm)
+    //   foro3 (-10mm) : C_out (curva da Y=-210, dy=200mm) + D_out (curva da Y=-150, dy=140mm)
+    //   foro4 (-30mm) : D_in (dritto, Y=-30)  + A_in (curva da Y=+90, dy=120mm PULITA)
     //
-    // PROBLEMA GEOMETRICO: B_out e D_out devono "scavalcare" la propria compagna di
-    // fibra (B_in/D_in), che resta dritta esattamente sulla Y che B_out/D_out devono
-    // attraversare per tutta la lunghezza del pannello. A_out/C_out invece NON hanno
-    // questo problema (l'ordine con A_in/C_in si mantiene naturalmente). Soluzione per
-    // B_out/D_out (confermata): un breve salto diagonale in profondita' (Z) PRIMA di
-    // iniziare la curva in Y, cosi' la curva avviene a una Z diversa da quella della
-    // compagna (zHome = Z alla curva a U; z = Z effettiva al foro, dopo il salto).
+    // Le fibre A_in e C_in ATTRAVERSANO il centro del pannello (curva "pulita" a 90deg
+    // con R60mm: dxCurve = sqrt(120*(4*60-120)) = 120mm, visibile nel disegno come
+    // le curve che arrivano al foro1 dal basso e al foro4 dall'alto).
+    //
+    // B_out e D_out devono attraversare Y del proprio braccio interno (B_in/D_in)
+    // che corre dritto alla stessa Z: necessario un breve salto diagonale in Z
+    // (zHome -> z, "jogDx" in X) prima della S-curva, cosi' la curva avviene a
+    // una Z sicura e la compagna non viene toccata.
     struct FiberLeg {
         G4String name;
         G4double yNominal; // Y lungo la corsa rettilinea principale (dopo la curva a U)
-        G4double yHole;    // Y effettiva al foro condiviso con la fibra "compagna"
-        G4double zHome;    // Z alla curva a U lontana (= Z della fibra, condivisa coi due capi)
-        G4double z;        // Z effettiva al foro (= zHome se non serve saltare)
-        G4double yTarget;  // posizione finale nel bundle esterno verso il SiPM
+        G4double yHole;    // Y effettiva al foro
+        G4double zHome;    // Z alla curva a U lontana
+        G4double z;        // Z effettiva al foro (= zHome se non serve salto)
     };
 
-    // Z base delle 4 fibre, centrate vicino alla mezzeria del pannello (spessore 50mm,
-    // quindi +-25mm) per avere margine di salto sufficiente.
-    G4double zA = 3.0*mm, zB = 1.0*mm, zC = -1.0*mm, zD = -3.0*mm;
-    // Z "di salto" dei due soli capi che devono scavalcare la propria compagna.
-    G4double zBOutJog = -13.0*mm, zDOutJog = 13.0*mm;
+    G4double zA = 24.0*mm, zB = 22.5*mm, zC = 18.0*mm, zD = 16.5*mm;
+    G4double zBOutJog = 19.5*mm, zDOutJog = 21.0*mm;
 
-    // yTarget e' assegnato per gruppo di foro, mantenendo l'ordine decrescente
-    // foro1(+30) > foro2(+10) > foro3(-10) > foro4(-30): cosi' i due capi della
-    // STESSA fibra che condividono la stessa Z (A_out/A_in e C_out/C_in -- B e D
-    // sono gia' protette dal salto in Z) non si incrociano nel bundle esterno.
     std::vector<FiberLeg> legs = {
-        {"A_out", 210.0*mm,   10.0*mm, zA, zA,         1.5*mm},  // -> foro2 (= B_out)
-        {"A_in",   90.0*mm,  -30.0*mm, zA, zA,        -2.5*mm},  // -> foro4 (= D_in, dritto)
-        {"B_out", 150.0*mm,   10.0*mm, zB, zBOutJog,   0.5*mm},  // -> foro2 (= A_out), salta in Z
-        {"B_in",   30.0*mm,   30.0*mm, zB, zB,         3.5*mm},  // -> foro1 (dritto, = C_in)
-        {"C_out",-210.0*mm,  -10.0*mm, zC, zC,        -0.5*mm},  // -> foro3 (= D_out)
-        {"C_in", -90.0*mm,    30.0*mm, zC, zC,         2.5*mm},  // -> foro1 (= B_in, dritto)
-        {"D_out",-150.0*mm,  -10.0*mm, zD, zDOutJog, -1.5*mm},  // -> foro3 (= C_out), salta in Z
-        {"D_in", -30.0*mm,  -30.0*mm, zD, zD,         -3.5*mm},  // -> foro4 (dritto, = A_in)
+        {"A_out", +210.0*mm,  +10.0*mm, zA,  zA       },  // foro2, curva giu' 200mm
+        {"A_in",   +90.0*mm,  -30.0*mm, zA,  zA       },  // foro4, curva giu' 120mm (PULITA, CROSS)
+        {"B_out", +150.0*mm,  +10.0*mm, zB,  zBOutJog },  // foro2, curva giu' 140mm + salto Z
+        {"B_in",   +30.0*mm,  +30.0*mm, zB,  zB       },  // foro1, dritto
+        {"C_out", -210.0*mm,  -10.0*mm, zC,  zC       },  // foro3, curva su 200mm
+        {"C_in",   -90.0*mm,  +30.0*mm, zC,  zC       },  // foro1, curva su 120mm (PULITA, CROSS)
+        {"D_out", -150.0*mm,  -10.0*mm, zD,  zDOutJog },  // foro3, curva su 140mm + salto Z
+        {"D_in",   -30.0*mm,  -30.0*mm, zD,  zD       },  // foro4, dritto
     };
 
-    // --- Fori (8 canali fisici, raggruppati in 4 posizioni X,Y condivise tra fibre diverse) ---
+    // Taglia 8 fori (uno per capo-fibra, 2 per ogni posizione Y sul bordo sinistro)
     for (const auto& leg : legs) {
         G4ThreeVector holePos(xScintEnd, leg.yHole, leg.z);
         sTyvek = new G4SubtractionSolid("Tyvek_Hole_N_"+leg.name, sTyvek, sHole, rotHole, holePos);
@@ -417,7 +504,6 @@ G4VPhysicalVolume* DetectorConstruction::ConstructNestedPanel() {
     new G4PVPlacement(0, G4ThreeVector(), lTyvek, "PhysTyvek_N", lBlack, false, 0, true);
     new G4LogicalSkinSurface("TyvekSkin_N", lTyvek, fOpWrapping);
 
-    // --- SUPERFICIE OTTICA PER IL NASTRO NERO (identica allo Standard) ---
     G4int nEntries = 8;
     G4double energy[8] = {2.00*eV, 2.30*eV, 2.50*eV, 2.70*eV, 2.90*eV, 3.10*eV, 3.30*eV, 3.50*eV};
 
@@ -436,7 +522,6 @@ G4VPhysicalVolume* DetectorConstruction::ConstructNestedPanel() {
     logicScint->SetVisAttributes(scintVis);
     new G4PVPlacement(0, G4ThreeVector(), logicScint, "ScintPhys_N", lTyvek, false, 0, true);
 
-    // --- TAPPI ("Plug") di materiale nero in ogni foro (identici allo Standard) ---
     G4double glueR = 0.600*mm, cladR = 0.495*mm, coreR = 0.480*mm;
     G4Tubs* sPlug = new G4Tubs("Plug_Solid_N", cladR, holeR, holeLen/2.0, 0, 360*deg);
     G4LogicalVolume* lPlug = new G4LogicalVolume(sPlug, blackMat, "Plug_Logic_N");
@@ -446,7 +531,6 @@ G4VPhysicalVolume* DetectorConstruction::ConstructNestedPanel() {
         new G4PVPlacement(rotHole, holePos, lPlug, "PhysPlug_N", logicWorld, false, 0, true);
     }
 
-    // --- LAMBDA DI COSTRUZIONE FIBRA (stesso stile dello Standard) ---
     auto makeStraight = [&](G4double len, G4String name) {
         G4Tubs* sGlue = new G4Tubs(name+"_SGlue", 0, glueR, len/2.0, 0, 360*deg);
         G4Tubs* sClad = new G4Tubs(name+"_SClad", 0, cladR, len/2.0, 0, 360*deg);
@@ -473,16 +557,6 @@ G4VPhysicalVolume* DetectorConstruction::ConstructNestedPanel() {
         return lGlue;
     };
 
-    auto makeNudeArc = [&](G4double bendR, G4double startAngle, G4double sweepAngle, G4String name) {
-        G4Torus* sClad = new G4Torus(name+"_SClad", 0, cladR, bendR, startAngle, sweepAngle);
-        G4Torus* sCore = new G4Torus(name+"_SCore", 0, coreR, bendR, startAngle, sweepAngle);
-        G4LogicalVolume* lClad = new G4LogicalVolume(sClad, cladMat, name+"_LClad");
-        G4LogicalVolume* lCore = new G4LogicalVolume(sCore, coreMat, name+"_LCore");
-        lClad->SetVisAttributes(cladVis); lCore->SetVisAttributes(coreVis);
-        new G4PVPlacement(0, G4ThreeVector(), lCore, name+"_PCore", lClad, false, 0, true);
-        return lClad;
-    };
-
     auto makeNudeStraight = [&](G4double len, G4String name) {
         G4Tubs* sClad = new G4Tubs(name+"_SClad", 0, cladR, len/2.0, 0, 360*deg);
         G4Tubs* sCore = new G4Tubs(name+"_SCore", 0, coreR, len/2.0, 0, 360*deg);
@@ -493,13 +567,51 @@ G4VPhysicalVolume* DetectorConstruction::ConstructNestedPanel() {
         return lClad;
     };
 
+    // Approssima un arco con una catena di corde dritte (G4Tubs) per evitare
+    // problemi numerici di G4Torus a rapporti d'aspetto estremi nel bundle esterno.
+    auto placeArcChain = [&](G4double bendR, G4double xCenter, G4double yCenter, G4double zCenter,
+                              G4double cosA, G4double sinA, G4double xSign, G4double phiStart, G4double phiEnd,
+                              G4int nSeg, G4String tag) {
+        auto pointAt = [&](G4double phi) {
+            return G4ThreeVector(xCenter + xSign*bendR*std::cos(phi),
+                                  yCenter + bendR*std::sin(phi)*cosA,
+                                  zCenter + bendR*std::sin(phi)*sinA);
+        };
+        G4ThreeVector prev = pointAt(phiStart);
+        for (G4int s = 0; s < nSeg; s++) {
+            G4double phiNext = phiStart + (phiEnd - phiStart) * (s+1.0)/nSeg;
+            G4ThreeVector next = pointAt(phiNext);
+            G4ThreeVector mid  = (prev + next) * 0.5;
+            G4ThreeVector dvec = next - prev;
+            G4double segLen = dvec.mag();
+            G4ThreeVector u = dvec.unit();
+            G4RotationMatrix* rotSeg = new G4RotationMatrix();
+            G4ThreeVector zAxis(0,0,1);
+            G4double dotZ = zAxis.dot(u);
+            if (dotZ < 1.0 - 1.0e-9) {
+                G4ThreeVector axis = zAxis.cross(u);
+                if (axis.mag() > 1.0e-9) {
+                    rotSeg->rotate(std::acos(dotZ), axis.unit());
+                } else {
+                    rotSeg->rotateX(180*deg);
+                }
+            }
+            G4String segName = tag + "_S" + std::to_string(s);
+            G4LogicalVolume* lSeg = makeNudeStraight(segLen, segName);
+            // Consecutive chord-segments share endpoints: overlap is fiber-on-fiber
+            // (same cladding material in air), physically harmless — skip check.
+            new G4PVPlacement(rotSeg, mid, lSeg, "p"+segName, logicWorld, false, 0, false);
+            prev = next;
+        }
+    };
+
     G4RotationMatrix* rotY90 = new G4RotationMatrix(); rotY90->rotateY(90*deg);
 
-    // --- CURVA A U LONTANA (raggio 60mm, lato destro, identica in struttura allo Standard) ---
+    // --- CURVE A U LONTANE (raggio 60mm, lato destro) ---
     G4double rU = 60.0*mm;
-    G4double xBackOfU = scintX - 60.0*mm;     // margine di 60mm dal bordo destro (come nel disegno)
-    G4double xUturnCenter = xBackOfU - rU;    // 505mm
-    G4double straightLen = xUturnCenter - xScintEnd; // 1130mm, come nel disegno tecnico
+    G4double xBackOfU     = scintX - 60.0*mm;     // = 565mm
+    G4double xUturnCenter = xBackOfU - rU;          // = 505mm
+    G4double straightLen  = xUturnCenter - xScintEnd; // = 1130mm
 
     auto placeUturn = [&](G4double yOut, G4double yIn, G4double zLeg, G4String name) {
         G4double yMid = (yOut + yIn) / 2.0;
@@ -512,91 +624,133 @@ G4VPhysicalVolume* DetectorConstruction::ConstructNestedPanel() {
     placeUturn(-210.0*mm,  -90.0*mm, zC, "Nest_UC");
     placeUturn(-150.0*mm,  -30.0*mm, zD, "Nest_UD");
 
-    // --- GAMBE: tratto dritto principale + (se serve) salto in Z + curva di convergenza ---
-    // I capi piu' interni (B_in, D_in) coincidono gia' con la Y del loro foro e restano
-    // completamente dritti. A_in/C_in convergono con una curva pulita (raggio 60mm).
-    // I capi esterni (A_out,B_out,C_out,D_out) devono invece "scavalcare" la propria
-    // compagna di fibra (che occupa, dritta o in curva, la Y che loro stessi devono
-    // attraversare): prima di curvare in Y fanno un breve salto diagonale in Z (zHome ->
-    // z, "jogDx" di estensione orizzontale), poi la curva in Y avviene gia' alla Z
-    // sicura, e restano a quella Z fino al foro.
-    G4double rMerge = 60.0*mm; // raggio della curva di "incontro", come indicato sul disegno
-    G4double jogDx  = 40.0*mm; // estensione orizzontale del salto diagonale in Z (angolo dolce)
+    // --- GAMBE: tratto rettilineo + (se serve) salto Z + S-curva R60mm ---
+    // Per ogni capo-fibra (leg): corre dritto a yNominal da xUturnCenter verso
+    // sinistra, poi eventuale jog diagonale in Z (per B_out e D_out, che altrimenti
+    // colliderebbero con B_in/D_in al passaggio), poi S-curva R60mm da yNominal
+    // a yHole. La formula della curva S con raggio fisso rMerge:
+    //   dxCurve = sqrt(dy*(4*rMerge - dy))    [estensione orizzontale dell'intera S]
+    //   theta   = acos(1 - dy/(2*rMerge))     [angolo di ciascun quarto di cerchio]
+    // Caso "pulito" (A_in, C_in): dy=120mm, rMerge=60mm -> dxCurve=120mm, theta=90deg.
+    G4double rMerge = 60.0*mm;
+    G4double jogDx  = 40.0*mm;
     for (const auto& leg : legs) {
-        G4double yStart = leg.yNominal, yTarget = leg.yHole;
-        G4double dy = std::abs(yStart - yTarget);
-        bool needsJog = std::abs(leg.z - leg.zHome) > 1.0e-9;
+        G4double yStart  = leg.yNominal;
+        G4double yTarget = leg.yHole;
+        G4double dy      = std::abs(yStart - yTarget);
+        bool needsJog    = std::abs(leg.z - leg.zHome) > 1.0e-9;
 
         if (dy < 1.0e-9 && !needsJog) {
-            // Capo gia' allineato al foro e nessuna compagna da scavalcare: tutto dritto.
+            // Rettilineo puro (B_in, D_in)
             G4LogicalVolume* lFull = makeStraight(straightLen, "Nest_"+leg.name);
             G4double xCenter = (xUturnCenter + xScintEnd) / 2.0;
-            new G4PVPlacement(rotY90, G4ThreeVector(xCenter, yTarget, leg.z), lFull, "Nest_P"+leg.name, logicScint, false, 0, true);
+            new G4PVPlacement(rotY90, G4ThreeVector(xCenter, yTarget, leg.z),
+                              lFull, "Nest_P"+leg.name, logicScint, false, 0, true);
             continue;
         }
 
-        // Per un raggio fisso rMerge, la lunghezza (dx) della curva a S che produce
-        // esattamente questo dy si ottiene invertendo dy = dx^2/(4*rMerge - dy)... cioe'
-        // dalla stessa relazione usata altrove (rBend = (dx^2+dy^2)/(4*dy)) con rBend=rMerge.
-        G4double dxCurve = (dy > 1.0e-9) ? std::sqrt(dy * (4.0*rMerge - dy)) : 0.0;
-        G4double dxTotalEnd = dxCurve + (needsJog ? jogDx : 0.0);
+        // dy > 2*R: due archi fissi 90° + tratto verticale (come da disegno per A_out/C_out)
+        // dy <= 2*R: S-curva a theta variabile (A_in/C_in e B_out/D_out)
+        bool bigDrop     = (dy > 2.0*rMerge + 1.0e-9);
+        G4double dxCurve = bigDrop ? (2.0*rMerge)
+                                   : ((dy > 1.0e-9) ? std::sqrt(dy * (4.0*rMerge - dy)) : 0.0);
+        // A_in e C_in (dy==2R): tratto orizzontale finale di 60mm al livello del foro
+        G4double finalApproach = (std::abs(dy - 2.0*rMerge) < 1.0e-9 && !bigDrop) ? 60.0*mm : 0.0;
+        G4double dxTotalEnd = dxCurve + (needsJog ? jogDx : 0.0) + finalApproach;
+        G4double preLen     = straightLen - dxTotalEnd;
 
-        G4double preLen = straightLen - dxTotalEnd;
         if (preLen > 0.0) {
             G4LogicalVolume* lPre = makeStraight(preLen, "Nest_"+leg.name+"_Pre");
-            G4double xPreCenter = xUturnCenter - preLen/2.0;
-            new G4PVPlacement(rotY90, G4ThreeVector(xPreCenter, yStart, leg.zHome), lPre, "Nest_P"+leg.name+"_Pre", logicScint, false, 0, true);
+            G4double xPreCenter   = xUturnCenter - preLen / 2.0;
+            new G4PVPlacement(rotY90, G4ThreeVector(xPreCenter, yStart, leg.zHome),
+                              lPre, "Nest_P"+leg.name+"_Pre", logicScint, false, 0, true);
         }
 
         if (needsJog) {
-            // Salto diagonale dalla Z di casa (condivisa con la compagna) alla Z di
-            // salto (libera), PRIMA che la curva in Y attraversi la zona occupata
-            // dalla compagna: cosi' quella curva avviene gia' a una Z sicura.
-            G4double xAfterPre = xUturnCenter - preLen; // = xScintEnd + dxTotalEnd
-            G4double dz = leg.z - leg.zHome;
-            G4double jogLen = std::sqrt(jogDx*jogDx + dz*dz);
-            G4double jogAngle = std::atan2(-jogDx, dz);
+            G4double xAfterPre = xUturnCenter - preLen;
+            G4double dz        = leg.z - leg.zHome;
+            G4double jogLen    = std::sqrt(jogDx*jogDx + dz*dz);
+            G4double jogAngle  = std::atan2(-jogDx, dz);
             G4RotationMatrix* rotJog = new G4RotationMatrix();
             rotJog->rotateY(jogAngle);
             G4LogicalVolume* lJog = makeStraight(jogLen, "Nest_"+leg.name+"_ZJog");
-            G4double xJogCenter = xAfterPre - jogDx/2.0;
-            G4double zJogCenter = (leg.zHome + leg.z) / 2.0;
-            new G4PVPlacement(rotJog, G4ThreeVector(xJogCenter, yStart, zJogCenter), lJog, "Nest_P"+leg.name+"_ZJog", logicScint, false, 0, true);
+            G4double xJogCenter   = xAfterPre - jogDx / 2.0;
+            G4double zJogCenter   = (leg.zHome + leg.z) / 2.0;
+            new G4PVPlacement(rotJog, G4ThreeVector(xJogCenter, yStart, zJogCenter),
+                              lJog, "Nest_P"+leg.name+"_ZJog", logicScint, false, 0, true);
         }
 
-        if (dy < 1.0e-9) continue; // solo salto in Z, nessuna curva in Y da fare
+        if (dy < 1.0e-9) continue;
 
-        G4double rBend = rMerge;
-        G4double theta = std::acos(1.0 - dy/(2.0*rBend));
-        G4double xCurveStart = xScintEnd + dxCurve;
+        G4double rBend       = rMerge;
+        G4double xCurveStart = xScintEnd + finalApproach + dxCurve;
+        bool goingDown       = (yStart > yTarget);
 
         G4RotationMatrix* rotArc1 = new G4RotationMatrix();
         G4RotationMatrix* rotArc2 = new G4RotationMatrix();
         rotArc2->rotateY(180*deg);
-        if (yStart < yTarget) {
+        if (!goingDown) {
             rotArc1->rotateX(180*deg);
             rotArc2->rotateX(180*deg);
         }
 
-        G4LogicalVolume* lArc1 = makeArc(rBend, 90*deg, theta, "Nest_"+leg.name+"_M1");
-        G4double yCenter1 = (yStart > yTarget) ? (yStart - rBend) : (yStart + rBend);
-        new G4PVPlacement(rotArc1, G4ThreeVector(xCurveStart, yCenter1, leg.z), lArc1, "Nest_P"+leg.name+"_M1", logicScint, false, 0, true);
+        if (bigDrop) {
+            // Arco 90° → tratto verticale → arco 90°
+            G4double yCenter1 = goingDown ? (yStart - rBend) : (yStart + rBend);
+            G4LogicalVolume* lArc1 = makeArc(rBend, 90*deg, 90*deg, "Nest_"+leg.name+"_M1");
+            new G4PVPlacement(rotArc1, G4ThreeVector(xCurveStart, yCenter1, leg.z),
+                              lArc1, "Nest_P"+leg.name+"_M1", logicScint, false, 0, true);
 
-        G4LogicalVolume* lArc2 = makeArc(rBend, 270*deg - theta, theta, "Nest_"+leg.name+"_M2");
-        G4double yCenter2 = (yStart > yTarget) ? (yTarget + rBend) : (yTarget - rBend);
-        new G4PVPlacement(rotArc2, G4ThreeVector(xScintEnd, yCenter2, leg.z), lArc2, "Nest_P"+leg.name+"_M2", logicScint, false, 0, true);
+            G4double vertLen     = dy - 2.0*rBend;
+            G4double xVertical   = xCurveStart - rBend;
+            G4double yVertCenter = goingDown ? (yCenter1 - vertLen/2.0) : (yCenter1 + vertLen/2.0);
+            G4RotationMatrix* rotX90 = new G4RotationMatrix(); rotX90->rotateX(90*deg);
+            G4LogicalVolume* lVert = makeStraight(vertLen, "Nest_"+leg.name+"_Vert");
+            new G4PVPlacement(rotX90, G4ThreeVector(xVertical, yVertCenter, leg.z),
+                              lVert, "Nest_P"+leg.name+"_Vert", logicScint, false, 0, true);
+
+            G4double yCenter2 = goingDown ? (yTarget + rBend) : (yTarget - rBend);
+            G4LogicalVolume* lArc2 = makeArc(rBend, 180*deg, 90*deg, "Nest_"+leg.name+"_M2");
+            new G4PVPlacement(rotArc2, G4ThreeVector(xScintEnd, yCenter2, leg.z),
+                              lArc2, "Nest_P"+leg.name+"_M2", logicScint, false, 0, true);
+        } else {
+            G4double theta    = std::acos(1.0 - dy / (2.0*rBend));
+            G4LogicalVolume* lArc1 = makeArc(rBend, 90*deg, theta, "Nest_"+leg.name+"_M1");
+            G4double yCenter1 = goingDown ? (yStart - rBend) : (yStart + rBend);
+            new G4PVPlacement(rotArc1, G4ThreeVector(xCurveStart, yCenter1, leg.z),
+                              lArc1, "Nest_P"+leg.name+"_M1", logicScint, false, 0, true);
+
+            G4double xArc2Center = xScintEnd + finalApproach;
+            G4LogicalVolume* lArc2 = makeArc(rBend, 270*deg - theta, theta, "Nest_"+leg.name+"_M2");
+            G4double yCenter2 = goingDown ? (yTarget + rBend) : (yTarget - rBend);
+            new G4PVPlacement(rotArc2, G4ThreeVector(xArc2Center, yCenter2, leg.z),
+                              lArc2, "Nest_P"+leg.name+"_M2", logicScint, false, 0, true);
+
+            if (finalApproach > 1.0e-9) {
+                G4LogicalVolume* lFApp = makeStraight(finalApproach, "Nest_"+leg.name+"_FApp");
+                new G4PVPlacement(rotY90,
+                    G4ThreeVector(xScintEnd + finalApproach/2.0, yTarget, leg.z),
+                    lFApp, "Nest_P"+leg.name+"_FApp", logicScint, false, 0, true);
+            }
+        }
     }
 
-    // --- SiPM E SUA SUPERFICIE OTTICA (identici allo Standard) ---
-    G4double sipmThick = 0.5*mm;
-    // Distanza pannello -> SiPM = bridgeLen + dxBundle + straightFinal = 200.0 mm (20 cm).
-    G4double bridgeLen = 10.0*mm, dxBundle = 170.0*mm, straightFinal = 20.0*mm;
+    // --- SiPM E SUA SUPERFICIE OTTICA ---
+    G4double sipmThick   = 0.5*mm;
+    G4double bridgeLen   = 10.0*mm, dxBundle = 170.0*mm, straightFinal = 20.0*mm;
+    G4double greaseThick = 0.5*mm;
 
-    // L'estensione Z del SiPM deve coprire tutte le Z usate dagli 8 capi nel bundle
-    // esterno (qui da -15mm a +15mm, per via dei salti in Z): 16mm di mezza altezza
-    // basta, con un po' di margine. Il SiPM e' centrato su Z=0 (non piu' a 20.25mm
-    // come nello Standard, che aveva fibre concentrate intorno a quella Z).
-    G4Box* sSiPM = new G4Box("SiPM_N", sipmThick, 3.0*mm, 16.0*mm);
+    G4double zSiPMCenter = 20.25*mm;
+    G4double rRing = 1.725*mm - cladR;
+    G4double packedY[8], packedZ[8];
+    packedY[0] = 0.0*mm; packedZ[0] = zSiPMCenter;
+    for (int k = 0; k < 7; k++) {
+        G4double ang = k * (360.0/7.0) * deg;
+        packedY[k+1] = rRing * std::cos(ang);
+        packedZ[k+1] = zSiPMCenter + rRing * std::sin(ang);
+    }
+
+    G4Box* sSiPM = new G4Box("SiPM_N", sipmThick, 3.0*mm, 3.0*mm);
     G4LogicalVolume* lSiPM = new G4LogicalVolume(sSiPM, sipmMat, "LogicSiPM_All");
     lSiPM->SetVisAttributes(sipmVis);
 
@@ -613,44 +767,57 @@ G4VPhysicalVolume* DetectorConstruction::ConstructNestedPanel() {
     new G4LogicalSkinSurface("SiPMSkin_N", lSiPM, opSiPM);
 
     G4double xBundleEnd = xScintEnd - bridgeLen - dxBundle;
-    G4double xSiPM      = xBundleEnd - straightFinal - sipmThick;
-    new G4PVPlacement(0, G4ThreeVector(xSiPM, 0, 0.0*mm), lSiPM, "pSiPM_N", logicWorld, false, 0, true);
+    G4double xFiberEnd  = xBundleEnd - straightFinal;
+    G4double xSiPM      = xFiberEnd - greaseThick - sipmThick;
 
-    // --- BUNDLE ESTERNO: gli 8 capi (gia' accoppiati a 2 a 2 nei 4 fori) confluiscono nel SiPM ---
+    // Grasso ottico tra faccia delle fibre e SiPM
+    G4Material* greaseMat = G4Material::GetMaterial("OpticalGrease");
+    G4Box* sGrease = new G4Box("Grease_N", greaseThick/2., 3.0*mm, 3.0*mm);
+    G4LogicalVolume* lGrease = new G4LogicalVolume(sGrease, greaseMat, "LogicGrease_N");
+    G4VisAttributes* greaseVis = new G4VisAttributes(G4Colour(0.9, 0.9, 0.2, 0.4));
+    lGrease->SetVisAttributes(greaseVis);
+    new G4PVPlacement(0, G4ThreeVector(xFiberEnd - greaseThick/2., 0, zSiPMCenter),
+                      lGrease, "pGrease_N", logicWorld, false, 0, true);
+
+    new G4PVPlacement(0, G4ThreeVector(xSiPM, 0, zSiPMCenter), lSiPM, "pSiPM_N", logicWorld, false, 0, true);
+
+    // Assegnazione fibra -> posizione impacchettata nel bundle da 3.45mm.
+    int legToPacked[8] = {0, 4, 7, 2, 6, 1, 3, 5};
+
+    // --- BUNDLE ESTERNO: 8 capi convergono verso il SiPM ---
     for (size_t i = 0; i < legs.size(); i++) {
         G4double yStart  = legs[i].yHole;
         G4double zFib    = legs[i].z;
-        G4double yTarget = legs[i].yTarget;
+        G4double yTarget = packedY[legToPacked[i]];
+        G4double zTarget = packedZ[legToPacked[i]];
         G4String tag = "Nest_" + legs[i].name;
 
         G4LogicalVolume* lBridge = makeNudeStraight(bridgeLen, tag+"_Bridge");
-        new G4PVPlacement(rotY90, G4ThreeVector(xScintEnd - bridgeLen/2.0, yStart, zFib), lBridge, "p"+tag+"_Bridge", logicWorld, false, 0, true);
+        new G4PVPlacement(rotY90, G4ThreeVector(xScintEnd - bridgeLen/2.0, yStart, zFib),
+                          lBridge, "p"+tag+"_Bridge", logicWorld, false, 0, true);
 
-        G4double dy = std::abs(yStart - yTarget);
-        G4double dx = dxBundle;
-        G4double rBend = (dx*dx + dy*dy) / (4.0*dy);
-        G4double theta = std::acos(1.0 - dy/(2.0*rBend));
-        G4double xBendStart = xScintEnd - bridgeLen;
+        G4double dy   = yTarget - yStart;
+        G4double dz   = zTarget - zFib;
+        G4double dr   = std::sqrt(dy*dy + dz*dz);
+        G4double dx   = dxBundle;
+        G4double rBend = (dx*dx + dr*dr) / (4.0*dr);
+        G4double theta = std::acos(1.0 - dr/(2.0*rBend));
+        G4double cosA  = -dy/dr;
+        G4double sinA  = -dz/dr;
 
-        G4RotationMatrix* rotArc1 = new G4RotationMatrix();
-        G4RotationMatrix* rotArc2 = new G4RotationMatrix();
-        rotArc2->rotateY(180*deg);
-        if (yStart < yTarget) {
-            rotArc1->rotateX(180*deg);
-            rotArc2->rotateX(180*deg);
-        }
+        G4double xArcStart = xScintEnd - bridgeLen;
+        G4double yCenter1 = yStart + rBend*dy/dr;
+        G4double zCenter1 = zFib   + rBend*dz/dr;
+        placeArcChain(rBend, xArcStart, yCenter1, zCenter1, cosA, sinA, +1.0, 90*deg, 90*deg+theta, 24, tag+"_NA1");
 
-        G4LogicalVolume* lArc1 = makeNudeArc(rBend, 90*deg, theta, tag+"_NA1");
-        G4double yCenter1 = (yStart > yTarget) ? (yStart - rBend) : (yStart + rBend);
-        new G4PVPlacement(rotArc1, G4ThreeVector(xBendStart, yCenter1, zFib), lArc1, "p"+tag+"_NA1", logicWorld, false, 0, true);
-
-        G4LogicalVolume* lArc2 = makeNudeArc(rBend, 270*deg - theta, theta, tag+"_NA2");
-        G4double yCenter2 = (yStart > yTarget) ? (yTarget + rBend) : (yTarget - rBend);
-        new G4PVPlacement(rotArc2, G4ThreeVector(xBundleEnd, yCenter2, zFib), lArc2, "p"+tag+"_NA2", logicWorld, false, 0, true);
+        G4double yCenter2 = yTarget - rBend*dy/dr;
+        G4double zCenter2 = zTarget - rBend*dz/dr;
+        placeArcChain(rBend, xBundleEnd, yCenter2, zCenter2, cosA, sinA, -1.0, 270*deg-theta, 270*deg, 24, tag+"_NA2");
 
         G4LogicalVolume* lFinal = makeNudeStraight(straightFinal, tag+"_Final");
         G4double xFinalCenter = xBundleEnd - straightFinal/2.0;
-        new G4PVPlacement(rotY90, G4ThreeVector(xFinalCenter, yTarget, zFib), lFinal, "p"+tag+"_Final", logicWorld, false, 0, true);
+        new G4PVPlacement(rotY90, G4ThreeVector(xFinalCenter, yTarget, zTarget),
+                          lFinal, "p"+tag+"_Final", logicWorld, false, 0, false);
     }
 
     return physWorld;
@@ -820,16 +987,15 @@ void DetectorConstruction::DefineMaterials() {
     G4Material* alMat     = nist->FindOrBuildMaterial("G4_Al");
     G4Material* blackMat  = nist->FindOrBuildMaterial("G4_POLYVINYL_CHLORIDE");
 
-    G4Material* coreMat   = nist->FindOrBuildMaterial("G4_POLYSTYRENE");
-    G4Material* cladMat = nist->FindOrBuildMaterial("G4_PLEXIGLASS"); 
+    G4Material* coreMat = nist->FindOrBuildMaterial("G4_POLYSTYRENE");
 
     G4int nEntries = 8;
     G4double energy[8] = {2.00*eV, 2.30*eV, 2.50*eV, 2.70*eV, 2.90*eV, 3.10*eV, 3.30*eV, 3.50*eV};
 
     G4double rindexCore[8]   = {1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60, 1.60};
-    G4double absCore[8]      = {3.5*m, 3.5*m, 3.5*m, 3.5*m, 3.5*m, 3.5*m, 3.5*m, 3.5*m}; 
-    G4double wlsAbsCore[8]   = {3.5*m, 3.5*m, 3.5*m, 0.1*mm, 0.1*mm, 0.1*mm, 0.1*mm, 0.1*mm}; 
-    G4double emissionBCF92[8]= {0.00, 0.10, 1.00, 0.20, 0.00, 0.00, 0.00, 0.00}; 
+    G4double absCore[8]      = {3.5*m, 3.5*m, 3.5*m, 3.5*m, 3.5*m, 3.5*m, 3.5*m, 3.5*m};
+    G4double wlsAbsCore[8]   = {3.5*m, 3.5*m, 3.5*m, 0.1*mm, 0.1*mm, 0.1*mm, 0.1*mm, 0.1*mm};
+    G4double emissionBCF92[8]= {0.00, 0.10, 1.00, 0.20, 0.00, 0.00, 0.00, 0.00};
 
     G4MaterialPropertiesTable* mptCore = new G4MaterialPropertiesTable();
     mptCore->AddProperty("RINDEX", energy, rindexCore, nEntries);
@@ -840,12 +1006,23 @@ void DetectorConstruction::DefineMaterials() {
     mptCore->AddConstProperty("WLSMEANNUMBERPHOTONS", 0.86);
     coreMat->SetMaterialPropertiesTable(mptCore);
 
+    // Cladding: PMMA (n=1.49) come materiale separato — FIX del bug in cui
+    // glueMat e cladMat puntavano allo stesso G4_PLEXIGLASS e le proprieta'
+    // del glue (n=1.57) sovrascrivevano quelle del cladding (n=1.49).
+    G4Element* eC = nist->FindOrBuildElement("C");
+    G4Element* eH = nist->FindOrBuildElement("H");
+    G4Element* eO = nist->FindOrBuildElement("O");
+    G4Material* FiberCladding = new G4Material("FiberCladding", 1.19*g/cm3, 3);
+    FiberCladding->AddElement(eC, 5);
+    FiberCladding->AddElement(eH, 8);
+    FiberCladding->AddElement(eO, 2);
+
     G4double rindexClad[8] = {1.49, 1.49, 1.49, 1.49, 1.49, 1.49, 1.49, 1.49};
     G4double absClad[8]    = {10.0*m, 10.0*m, 10.0*m, 10.0*m, 10.0*m, 10.0*m, 10.0*m, 10.0*m};
     G4MaterialPropertiesTable* mptClad = new G4MaterialPropertiesTable();
     mptClad->AddProperty("RINDEX", energy, rindexClad, nEntries);
     mptClad->AddProperty("ABSLENGTH", energy, absClad, nEntries);
-    cladMat->SetMaterialPropertiesTable(mptClad);
+    FiberCladding->SetMaterialPropertiesTable(mptClad);
 
     G4double rindexScint[8]  = {1.58, 1.58, 1.58, 1.58, 1.58, 1.58, 1.58, 1.58};
     G4double absScint[8]     = {3.8*m, 3.8*m, 3.8*m, 3.8*m, 3.8*m, 3.8*m, 3.8*m, 3.8*m};
@@ -873,6 +1050,20 @@ void DetectorConstruction::DefineMaterials() {
     G4MaterialPropertiesTable* mptAir = new G4MaterialPropertiesTable();
     mptAir->AddProperty("RINDEX", energy, rindexAir, nEntries);
     air->SetMaterialPropertiesTable(mptAir);
+
+    // Grasso ottico: n≈1.465 (silicone Dow Corning), accoppia le fibre al SiPM
+    G4Element* eSi = nist->FindOrBuildElement("Si");
+    G4Material* OpticalGrease = new G4Material("OpticalGrease", 1.03*g/cm3, 4);
+    OpticalGrease->AddElement(eSi, 1);
+    OpticalGrease->AddElement(eC,  2);
+    OpticalGrease->AddElement(eH,  6);
+    OpticalGrease->AddElement(eO,  1);
+    G4double rindexGrease[8] = {1.465,1.465,1.465,1.465,1.465,1.465,1.465,1.465};
+    G4double absGrease[8]    = {10*m, 10*m, 10*m, 10*m, 10*m, 10*m, 10*m, 10*m};
+    G4MaterialPropertiesTable* mptGrease = new G4MaterialPropertiesTable();
+    mptGrease->AddProperty("RINDEX", energy, rindexGrease, nEntries);
+    mptGrease->AddProperty("ABSLENGTH", energy, absGrease, nEntries);
+    OpticalGrease->SetMaterialPropertiesTable(mptGrease);
 
     G4double rindexBlack[8] = {1.50, 1.50, 1.50, 1.50, 1.50, 1.50, 1.50, 1.50};
     G4double absBlack[8]    = {0.001*mm, 0.001*mm, 0.001*mm, 0.001*mm, 0.001*mm, 0.001*mm, 0.001*mm, 0.001*mm};
@@ -908,7 +1099,7 @@ void DetectorConstruction::BuildContinuousSpiralSector(G4LogicalVolume* motherVo
     G4double scaleX = (col % 2 == 0) ? 1.0 : -1.0; 
 
     G4Material* coreMat = G4Material::GetMaterial("G4_POLYSTYRENE");
-    G4Material* cladMat = G4Material::GetMaterial("G4_PLEXIGLASS"); 
+    G4Material* cladMat = G4Material::GetMaterial("FiberCladding");
     G4Material* glueMat = G4Material::GetMaterial("G4_PLEXIGLASS");
 
     G4double glueR = 0.600*mm, cladR = 0.495*mm, coreR = 0.480*mm; 

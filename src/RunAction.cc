@@ -26,7 +26,8 @@ RunAction::RunAction(G4String outputFileName)
     am->CreateNtupleDColumn("Vtx_Z_mm");        // 9
     am->CreateNtupleDColumn("Dir_X");           // 10
     am->CreateNtupleDColumn("Dir_Y");           // 11
-    am->CreateNtupleDColumn("Dir_Z");           // 12
+    am->CreateNtupleDColumn("Dir_Z");               // 12
+    am->CreateNtupleIColumn("Hits_SiPM_Detected");  // 13: fotoni rivelati dopo PDE
     am->FinishNtuple(0);
 
     // --- NTUPLE 1: Fotoni ---
@@ -36,7 +37,8 @@ RunAction::RunAction(G4String outputFileName)
     // Salviamo la lunghezza d'onda in nanometri
     am->CreateNtupleDColumn("Wavelength_nm");   // 2
     am->CreateNtupleDColumn("Arrival_Time_ns"); // 3
-    am->CreateNtupleIColumn("SiPM_ID");         // 4 (Sarà sempre 0, ma utile tenerlo)
+    am->CreateNtupleIColumn("SiPM_ID");         // 4
+    am->CreateNtupleIColumn("Detected");        // 5: 1=rivelato (PDE), 0=assorbito senza segnale
     am->FinishNtuple(1);
 }
 

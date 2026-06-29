@@ -9,9 +9,10 @@
 struct PhotonHitInfo {
     G4int    eventID;
     G4int    trackID;
-    G4double wavelength; // Qui salveremo direttamente i nm
+    G4double wavelength;
     G4double time;
     G4int    sipmID;
+    G4bool   detected;  // true se il fotone ha passato la selezione PDE del SiPM
 };
 
 class EventAction : public G4UserEventAction {
@@ -32,11 +33,10 @@ public:
     
     bool IsPhotonUnique(G4int trackID);
 
-    // Hit su SiPM unico
-    void RegisterSiPMHit(G4double time);
+    // Hit su SiPM: total (tutti gli arrivi) + detected (solo quelli che passano PDE)
+    void RegisterSiPMHit(G4double time, G4bool detected);
 
-    // Passiamo l'energia raw, la convertiamo dentro
-    void AddPhotonData(G4int trackID, G4double energy, G4double time, G4int sipmID);
+    void AddPhotonData(G4int trackID, G4double energy, G4double time, G4int sipmID, G4bool detected);
     void SetEventStartTime(G4double t) { if (fEventStartTime < 0.) fEventStartTime = t; }
     G4double GetEventStartTime() const { return fEventStartTime; }
 
@@ -49,8 +49,8 @@ private:
     G4double fFirstHitTime;
     G4int    fNPhotonsEntrati;
     
-    // Un solo contatore hits
-    G4int    fSiPMHits;
+    G4int    fSiPMHits;           // tutti i fotoni che arrivano al SiPM
+    G4int    fSiPMHitsDetected;   // solo quelli effettivamente rivelati (PDE applicata)
     
     std::unordered_set<G4int> fCountedPhotons;
     std::vector<PhotonHitInfo> fPhotonBuffer;

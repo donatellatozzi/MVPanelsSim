@@ -5,8 +5,8 @@
 #include "SteppingAction.hh"
 #include "TrackingAction.hh" // Se usi ancora TrackingAction per nascondere traiettorie
 
-ActionInitialization::ActionInitialization(G4String outputFileName, G4String mode)
-  : G4VUserActionInitialization(), fOutputFileName(outputFileName), fMode(mode)
+ActionInitialization::ActionInitialization(G4String outputFileName, G4String mode, G4long seed)
+  : G4VUserActionInitialization(), fOutputFileName(outputFileName), fMode(mode), fSeed(seed)
 {}
 
 ActionInitialization::~ActionInitialization()
@@ -17,7 +17,7 @@ void ActionInitialization::BuildForMaster() const {
 }
 
 void ActionInitialization::Build() const {
-    SetUserAction(new PrimaryGeneratorAction(fMode));
+    SetUserAction(new PrimaryGeneratorAction(fMode, fSeed));
     SetUserAction(new RunAction(fOutputFileName)); 
     
     // 1. Creiamo EventAction

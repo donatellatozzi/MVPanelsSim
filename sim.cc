@@ -3,9 +3,10 @@
 #include "G4VisExecutive.hh"
 #include "G4UIExecutive.hh"
 #include "Randomize.hh"
+#include <unistd.h>
 
 #include "DetectorConstruction.hh"
-#include "PhysicsList.hh" 
+#include "PhysicsList.hh"
 #include "ActionInitialization.hh"
 
 int main(int argc, char** argv)
@@ -17,11 +18,12 @@ int main(int argc, char** argv)
     G4String wrapping     = "Tyvek";   // Tyvek oppure Mylar
     G4String outputFile   = "output.root";
     G4String extraArg     = "";        // Numero eventi (muons) o nome macro (gamma)
+    G4long   seed         = 0;         // 0 = automatico/indipendente, >0 = riproducibile
 
     // --- PARSER DEGLI ARGOMENTI DA RIGA DI COMANDO ---
     if (argc == 1) {
         G4cout << "----> Avvio GUI con valori di default (Muoni, Spiral, Tyvek)" << G4endl;
-    } 
+    }
     else if (G4String(argv[1]) == "gui") {
         // ---> LA MAGIA PER LA GUI PERSONALIZZATA <---
         runMode = "gui";
@@ -38,24 +40,48 @@ int main(int argc, char** argv)
         wrapping     = argv[3];
         outputFile   = argv[4];
         extraArg     = argv[5];
-    } 
+        if (argc >= 7) seed = std::stol(argv[6]); // seed opzionale (riproducibilità)
+    }
     else {
         G4cerr << "ERRORE: Numero di argomenti non valido!" << G4endl;
         G4cerr << "USO GUI DEFAULT : ./sim" << G4endl;
         G4cerr << "USO GUI CUSTOM  : ./sim gui <gamma/muons> <Spiral/Standard/Nested> <Tyvek/Mylar>" << G4endl;
-        G4cerr << "USO BATCH MUONI : ./sim muons <Geometry> <Wrapping> <Output.root> <nEvents>" << G4endl;
-        G4cerr << "USO BATCH GAMMA : ./sim gamma <Geometry> <Wrapping> <Output.root> <macro.mac>" << G4endl;
+        G4cerr << "USO BATCH MUONI : ./sim muons    <Geometry> <Wrapping> <Output.root> <nEvents> [seed]" << G4endl;
+        G4cerr << "USO BATCH GAMMA : ./sim gamma    <Geometry> <Wrapping> <Output.root> <macro.mac>" << G4endl;
+        G4cerr << "USO BATCH ELETTRONI: ./sim electron <Geometry> <Wrapping> <Output.root> <macro.mac>" << G4endl;
+        G4cerr << "  [seed] omesso o 0 -> run indipendente (multi-thread, per accumulare statistica)." << G4endl;
+        G4cerr << "  [seed] > 0        -> run riproducibile (forza 1 thread), utile per confrontare" << G4endl;
+        G4cerr << "                       geometrie diverse sugli stessi identici eventi." << G4endl;
         return 1;
     }
 
     // --- INIZIALIZZAZIONE RANDOM ENGINE ---
     G4Random::setTheEngine(new CLHEP::RanecuEngine);
-    G4Random::setTheSeed(time(NULL));
+    if (seed > 0) {
+        G4cout << "----> Seed fisso: " << seed << " (run riproducibile, forzato 1 thread)" << G4endl;
+        G4Random::setTheSeed(seed);
+    } else {
+        // time(NULL) da solo ha risoluzione di 1 secondo: due processi lanciati
+        // in parallelo nello stesso secondo avrebbero lo stesso seed globale.
+        // Aggiungendo il PID il seed resta diverso anche in quel caso.
+        G4long autoSeed = static_cast<G4long>(time(NULL)) + static_cast<G4long>(getpid());
+        G4Random::setTheSeed(autoSeed);
+    }
 
     // --- CREAZIONE RUN MANAGER ---
-    auto* runManager = G4RunManagerFactory::CreateRunManager(G4RunManagerType::Default);
+    // Con un seed fisso usiamo il run manager Serial vero (non MT con 1 thread):
+    // il run manager MT, anche con un solo worker, ri-seeda il motore random
+    // globale evento per evento per garantire la sua riproducibilità interna,
+    // ma questo non si combina con il generatore di EcoMug (che avanza in modo
+    // continuo) e produce uno sfasamento tra run con geometrie diverse. In
+    // modalità Serial il motore random avanza in un unico flusso continuo,
+    // identico a parità di seed e di codice eseguito -> confronto evento per
+    // evento affidabile tra geometrie diverse.
+    auto* runManager = (seed > 0)
+        ? G4RunManagerFactory::CreateRunManager(G4RunManagerType::SerialOnly)
+        : G4RunManagerFactory::CreateRunManager(G4RunManagerType::Default);
 
-    if (runMode != "gui") {
+    if (runMode != "gui" && seed == 0) {
         runManager->SetNumberOfThreads(4);
     }
 
@@ -69,10 +95,20 @@ int main(int argc, char** argv)
     runManager->SetUserInitialization(new PhysicsList());
     
     // --- ACTION INITIALIZATION (Ora usa particleType coerente) ---
-    runManager->SetUserInitialization(new ActionInitialization(outputFile, particleType));
+    runManager->SetUserInitialization(new ActionInitialization(outputFile, particleType, seed));
 
     // --- INIZIALIZZAZIONE KERNEL ---
-    runManager->Initialize(); 
+    runManager->Initialize();
+
+    // Il controllo di overlap dei volumi (checkOverlaps=true nei G4PVPlacement)
+    // consuma numeri casuali dal motore globale durante Initialize(), e lo fa
+    // un numero di volte diverso a seconda di quanti volumi vengono piazzati
+    // dalla geometria scelta. Per garantire che due geometrie diverse partano
+    // dallo stesso identico stato del generatore all'inizio del run, ri-applichiamo
+    // il seed qui, dopo la costruzione della geometria e prima del beamOn.
+    if (seed > 0) {
+        G4Random::setTheSeed(seed);
+    }
 
     G4UImanager* UImanager = G4UImanager::GetUIpointer();
 
@@ -101,14 +137,15 @@ int main(int argc, char** argv)
         G4cout << "Wrapping  : " << wrapping << G4endl;
         G4cout << "File Root : " << outputFile << G4endl;
 
-        if (particleType == "gamma") {
-            G4cout << "Esecuzione Macro: " << extraArg << G4endl;
-            UImanager->ApplyCommand("/control/execute " + extraArg);
-        } 
-        else if (particleType == "muons") {
+        if (particleType == "muons") {
             int nEvents = std::stoi(extraArg);
             G4cout << "Eventi richiesti: " << nEvents << G4endl;
             UImanager->ApplyCommand("/run/beamOn " + std::to_string(nEvents));
+        }
+        else {
+            // Qualsiasi altra particella (gamma, electron, ...) usa GPS via macro
+            G4cout << "Esecuzione Macro: " << extraArg << G4endl;
+            UImanager->ApplyCommand("/control/execute " + extraArg);
         }
         G4cout << "========== FINE RUN BATCH ==========" << G4endl;
     }

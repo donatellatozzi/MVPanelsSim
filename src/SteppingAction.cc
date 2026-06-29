@@ -5,6 +5,8 @@
 #include "G4MuonMinus.hh"
 #include "G4OpticalPhoton.hh"
 #include "G4SystemOfUnits.hh"
+#include "G4OpBoundaryProcess.hh"
+#include "G4ProcessManager.hh"
 
 // Inizializziamo il puntatore fEventAction
 SteppingAction::SteppingAction(EventAction* eventAction)
@@ -51,19 +53,27 @@ void SteppingAction::UserSteppingAction(const G4Step* step)
     if (track->GetDefinition() == G4OpticalPhoton::Definition()) {
         
         // =========================================================
-        // A. CONTEGGIO FOTONI NELLE FIBRE (Logica della Presenza)
+        // A. CONTEGGIO FOTONI NEL CORE DELLA FIBRA (Prima entrata)
         // =========================================================
-        // Invece di guardare i confini (pre/post), guardiamo semplicemente
-        // in che volume si trova il fotone in QUESTO momento.
-        auto currentVol = track->GetVolume();
-        if (currentVol) {
-            G4String currentLogName = currentVol->GetLogicalVolume()->GetName();
-            
-            // Se in questo istante il fotone sta volando nel Core o nel Clad...
-            if (currentLogName.find("C") != std::string::npos || currentLogName.find("Co") != std::string::npos) {
-                // ...e non lo avevamo mai contato prima, Aggiungiamolo!
-                if (fEventAction->IsPhotonUnique(track->GetTrackID())) {
-                    fEventAction->AddPhotonEntrato(); 
+        // Conta ogni traccia fotonica la prima volta che attraversa il confine
+        // da un volume non-core a _LCore (il core WLS dove avviene l'assorbimento
+        // UV e la riemissione verde). I fotoni WLS nati nel core non attivano
+        // questa condizione (il loro primo step ha pre-step gia' nel core).
+        // IsPhotonUnique garantisce il conteggio singolo anche per rientri.
+        {
+            auto preVol  = step->GetPreStepPoint()->GetPhysicalVolume();
+            auto postVol = step->GetPostStepPoint()->GetPhysicalVolume();
+            if (preVol && postVol) {
+                G4String preName  = preVol->GetLogicalVolume()->GetName();
+                G4String postName = postVol->GetLogicalVolume()->GetName();
+
+                bool preInCore  = (preName.find("_LCore")  != G4String::npos);
+                bool postInCore = (postName.find("_LCore") != G4String::npos);
+
+                if (!preInCore && postInCore) {
+                    if (fEventAction->IsPhotonUnique(track->GetTrackID())) {
+                        fEventAction->AddPhotonEntrato();
+                    }
                 }
             }
         }
@@ -95,13 +105,27 @@ void SteppingAction::UserSteppingAction(const G4Step* step)
                             hitTime = globalHitTime - eventStartTime;
                         }
                         
-                        G4double energy = track->GetKineticEnergy(); 
-                        
-                        // Registriamo il segnale
-                        fEventAction->RegisterSiPMHit(hitTime);
-                        fEventAction->AddPhotonData(track->GetTrackID(), energy, hitTime, sipmID);
+                        G4double energy = track->GetKineticEnergy();
 
-                        // Spegniamo il fotone
+                        // Controlla se il fotone e' stato effettivamente rivelato (PDE)
+                        // G4OpBoundaryProcess setta Status==Detection quando EFFICIENCY>0
+                        // assorbe il fotone con probabilita' (1-EFFICIENCY)
+                        G4bool detected = false;
+                        G4ProcessManager* pm = track->GetDefinition()->GetProcessManager();
+                        if (pm) {
+                            G4ProcessVector* pv = pm->GetPostStepProcessVector();
+                            for (G4int j = 0; j < (G4int)pv->entries(); ++j) {
+                                if ((*pv)[j]->GetProcessName() == "OpBoundary") {
+                                    auto* bp = dynamic_cast<G4OpBoundaryProcess*>((*pv)[j]);
+                                    if (bp) detected = (bp->GetStatus() == Detection);
+                                    break;
+                                }
+                            }
+                        }
+
+                        fEventAction->RegisterSiPMHit(hitTime, detected);
+                        fEventAction->AddPhotonData(track->GetTrackID(), energy, hitTime, sipmID, detected);
+
                         track->SetTrackStatus(fStopAndKill);
                     }
                 }

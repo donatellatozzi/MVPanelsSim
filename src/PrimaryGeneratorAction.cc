@@ -7,22 +7,41 @@
 #include "G4MuonPlus.hh"
 #include "G4SystemOfUnits.hh"
 #include "Randomize.hh"
+#include <CLHEP/Random/RanecuEngine.h>
 #include <cmath>
+#include <random>
 
-#include "EcoMug.h" 
+#include "EcoMug.h"
 
-PrimaryGeneratorAction::PrimaryGeneratorAction(G4String mode)
+PrimaryGeneratorAction::PrimaryGeneratorAction(G4String mode, G4long seed)
 : G4VUserPrimaryGeneratorAction(),
   fParticleGun(nullptr),
   fGPS(nullptr),
   fMuonGen(nullptr),
-  fMode(mode)
+  fMode(mode),
+  fGenEngine(nullptr)
 {
     if (fMode == "muons") {
         // Inizializza tutto per EcoMug
         fParticleGun = new G4ParticleGun(1);
         fMuonGen = new EcoMug();
-        fMuonGen->SetUseSky(); 
+        fMuonGen->SetUseSky();
+
+        fGenEngine = new CLHEP::RanecuEngine();
+        if (seed > 0) {
+            // Riproducibile: stesso seed -> stessa sequenza di primari,
+            // indipendentemente dalla geometria/fisica a valle.
+            fMuonGen->SetSeed(static_cast<std::uint64_t>(seed));
+            fGenEngine->setSeed(seed, 0);
+        } else {
+            // Auto/indipendente: il costruttore di default di RanecuEngine usa
+            // una tabella di seed deterministica, quindi va seedato a mano con
+            // entropia vera per garantire run statisticamente indipendenti.
+            fGenEngine->setSeed(static_cast<long>(std::random_device{}()), 0);
+        }
+        // Nota: la carica di EcoMug usa un generatore interno (mEngineC) non
+        // seedabile da fuori, perciò non la usiamo: la carica viene rigenerata
+        // "a mano" più sotto con fGenEngine.
     } else {
         // Inizializza il General Particle Source per i Gamma
         fGPS = new G4GeneralParticleSource();
@@ -34,6 +53,7 @@ PrimaryGeneratorAction::~PrimaryGeneratorAction()
     if (fParticleGun) delete fParticleGun;
     if (fGPS) delete fGPS;
     if (fMuonGen) delete fMuonGen;
+    if (fGenEngine) delete fGenEngine;
 }
 
 void PrimaryGeneratorAction::GeneratePrimaries(G4Event* anEvent)
@@ -61,8 +81,8 @@ void PrimaryGeneratorAction::GeneratePrimaries(G4Event* anEvent)
 
             // 1. Spariamo da SOPRA tutto il pannello (rettangolo pari alla sua
             // estensione XY), con un piccolo margine d'aria sopra la faccia superiore.
-            G4double x_pos = (G4UniformRand() - 0.5) * 2.0 * kPanelHalfX;
-            G4double y_pos = (G4UniformRand() - 0.5) * 2.0 * kPanelHalfY;
+            G4double x_pos = (fGenEngine->flat() - 0.5) * 2.0 * kPanelHalfX;
+            G4double y_pos = (fGenEngine->flat() - 0.5) * 2.0 * kPanelHalfY;
             pos = G4ThreeVector(x_pos, y_pos, kStartZ);
 
             G4double theta = fMuonGen->GetGenerationTheta();
@@ -100,10 +120,14 @@ void PrimaryGeneratorAction::GeneratePrimaries(G4Event* anEvent)
         G4double mass = G4MuonMinus::MuonMinus()->GetPDGMass();
         G4double ekin = std::sqrt(p*p + mass*mass) - mass;
 
-        if (fMuonGen->GetCharge() < 0) {
-            fParticleGun->SetParticleDefinition(G4MuonMinus::MuonMinus());
-        } else {
+        // Carica campionata qui (non da fMuonGen->GetCharge(), vedi nota nel
+        // costruttore) con lo stesso rapporto mu+/mu- di EcoMug (128/228 ~ 1.28),
+        // usando il motore dedicato fGenEngine -> riproducibile con il seed.
+        G4bool isPositive = (fGenEngine->flat() < (128.0 / 228.0));
+        if (isPositive) {
             fParticleGun->SetParticleDefinition(G4MuonPlus::MuonPlus());
+        } else {
+            fParticleGun->SetParticleDefinition(G4MuonMinus::MuonMinus());
         }
 
         fParticleGun->SetParticlePosition(pos);

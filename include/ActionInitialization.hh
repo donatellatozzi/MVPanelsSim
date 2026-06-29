@@ -14,8 +14,9 @@
 class ActionInitialization : public G4VUserActionInitialization
 {
   public:
-    // Costruttore: accetta il nome del file di output (es. "output.root")
-  ActionInitialization(G4String outputFileName, G4String mode);
+    // Costruttore: accetta il nome del file di output (es. "output.root") e un
+    // seed opzionale (0 = automatico/indipendente, >0 = riproducibile)
+  ActionInitialization(G4String outputFileName, G4String mode, G4long seed = 0);
     virtual ~ActionInitialization();
 
     // Metodo chiamato solo dal thread Master in modalità Multi-Threading
@@ -30,6 +31,7 @@ class ActionInitialization : public G4VUserActionInitialization
     // Variabile per conservare il nome del file passato dal main
     G4String fOutputFileName;
     G4String fMode;
+    G4long fSeed;
 };
 
 #endif

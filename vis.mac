@@ -4,7 +4,7 @@
 /vis/viewer/set/background black
 /vis/viewer/set/style surface
 /vis/viewer/set/autoRefresh true
-/vis/viewer/set/lineSegmentsPerCircle 100
+/vis/viewer/set/lineSegmentsPerCircle 1000
 
 # Disegna la geometria
 /vis/drawVolume
